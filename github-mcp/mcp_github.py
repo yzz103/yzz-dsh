@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 SERVER_NAME = "mcp-github"
-SERVER_VERSION = "1.0.3"
+SERVER_VERSION = "1.0.4"
 SUPPORTED_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18", "2024-11-05"]
 DEFAULT_API = "https://api.github.com"
 API_VERSION = "2022-11-28"
@@ -399,9 +399,10 @@ def tool_create_repo(gh: GitHub, args: dict) -> tuple[list[dict], bool]:
 
 def tool_get_file(gh: GitHub, args: dict) -> tuple[list[dict], bool]:
     repo = str(args.get("repo") or "").strip()
+    # path 允许空串：表示仓库根目录，返回顶层条目列表
     path = str(args.get("path") or "").strip()
-    if not repo or not path:
-        return _text("参数 repo（owner/name）与 path 都必填", True)
+    if not repo:
+        return _text("参数 repo（owner/name）必填；path 留空表示仓库根目录", True)
     try:
         data = gh.contents(repo, path, str(args.get("ref") or ""))
     except GitHubError as exc:

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
@@ -111,6 +112,35 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parts[4:6] == ["git", "commits"] and len(parts) >= 7:
                 self._send(200, {"sha": parts[6], "tree": {"sha": "tree-of-" + parts[6]}})
+                return
+            if parts[4:5] == ["contents"]:
+                # path 允许空（= 仓库根目录）；目录回条目列表，文件回 base64 正文
+                rest = "/".join(parts[5:]).strip("/")
+                demo = {"README.md": "# demo\n", "docs/说明.md": "# 说明\n"}
+                if rest and rest in demo:
+                    blob = demo[rest]
+                    self._send(200, {
+                        "type": "file", "path": rest, "size": len(blob.encode("utf-8")),
+                        "sha": "demo-sha", "encoding": "base64",
+                        "content": base64.b64encode(blob.encode("utf-8")).decode("ascii"),
+                    })
+                    return
+                prefix = rest + "/" if rest else ""
+                items, seen = [], set()
+                for key in sorted(demo):
+                    if not key.startswith(prefix):
+                        continue
+                    head = key[len(prefix):].split("/")
+                    if len(head) == 1:
+                        items.append({"type": "file", "path": key,
+                                      "size": len(demo[key].encode("utf-8"))})
+                    elif head[0] not in seen:
+                        seen.add(head[0])
+                        items.append({"type": "dir", "path": prefix + head[0]})
+                if items:
+                    self._send(200, items)
+                    return
+                self._send(404, {"message": "Not Found"})
                 return
             self._send(404, {"message": "Not Found"})
             return
@@ -367,9 +397,19 @@ def main() -> int:
             finally:
                 m2.close()
 
-        print("[10] 目录/文件读取")
+        print("[10] 目录 / 文件读取")
+        text, err = m.tool("github_get_file", {"repo": "test-user/demo-repo", "path": ""})
+        check(not err and "目录" in text and "README.md" in text,
+              "path 留空可列仓库根目录", text[:160])
         text, err = m.tool("github_get_file", {"repo": "test-user/demo-repo", "path": "README.md"})
-        check(err, "内容接口未实现时给出可读错误", text[:120])
+        check(not err and "# demo" in text, "读回文件正文", text[:160])
+        text, err = m.tool("github_get_file", {"repo": "test-user/demo-repo", "path": "docs"})
+        check(not err and "目录" in text and "说明.md" in text,
+              "path 给目录时列条目", text[:160])
+        text, err = m.tool("github_get_file", {"repo": "test-user/demo-repo", "path": "nope.md"})
+        check(err, "不存在的路径给出可读错误", text[:120])
+        text, err = m.tool("github_get_file", {"path": "README.md"})
+        check(err and "repo" in text, "缺 repo 参数时报错", text[:120])
 
         print("[11] 空仓库读 ref 返回 409 的情形")
         STATE.calls.clear()
