@@ -109,9 +109,18 @@ python install_mcp_config.py --remove   # 撤销
 不想在对话里拼 `files[]` 的话，用 `push_project.py`（同目录，复用本服务的推送逻辑）：
 
 ```bash
-python push_project.py <项目目录> --dry-run        # 先看计划：推哪些、多大、缺什么
-python push_project.py <项目目录>                # 真推，落到 <项目名>/ 下
+python push_project.py --status                  # 先看仓库里已发布了哪些项目
+python push_project.py <项目目录> --dry-run       # 看计划：推哪些、多大、缺什么
+python push_project.py <项目目录>                 # 已发布项目：直接更新
+python push_project.py <新目录> --new             # 新项目：只在用户明确要求发布时才加
 ```
+
+**发布策略（按状态自动判定）**：
+
+| 项目状态 | 判定 | 行为 |
+|---|---|---|
+| 已发布（远端已有 `<项目名>/` 顶层文件夹） | 自动 | **更新后直接提交推送**，不需二次确认 |
+| 新项目（远端没有该文件夹） | 自动 | **不自动发布**，退出码 **5**；用户明确说要提交才加 `--new` |
 
 它会依次做四件事：
 
@@ -120,8 +129,8 @@ python push_project.py <项目目录>                # 真推，落到 <项目�
 2. **骨架体检**：`README.md`、`CHANGELOG.md`、`pyproject.toml`、`tests/`（缺了默认拦住，
    `--allow-missing` 可放行）；
 3. **本机路径硬门禁**：扫出盘符开头的本机安装路径（APP / DSH / Program Files），命中即中止（退出码 4），确认要发才加 `--allow-local-paths`；
-4. **分批推送**：按 `MAX_FILES`（100）切块，路径自动加 `<项目名>/` 前缀，仓库里已有同名
-   文件夹时会要求 `--yes` 确认。
+4. **发布状态判定 + 分批推送**：远端有同名文件夹 → 自动更新；没有 → 需 `--new`。
+   推送按 `MAX_FILES`（100）切块，路径自动加 `<项目名>/` 前缀。
 
 常用参数：`--name`（改名）、`--repo`（换仓库）、`--message`（提交信息）、`--branch`。
 

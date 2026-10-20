@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
 r"""push_project.py —— 把一个项目目录推到 GitHub 仓库（`yzz103/yzz-dsh` 的某个顶层文件夹）。
 
-用户约定（2026-10-20）：「以后的项目都上传到 github 仓库」。
-本脚本就是那句话的可执行版本：一条命令完成「体检 → 密钥扫描 → 推送 → 回执」。
+用户约定（2026-10-20 修订，取代原来的「以后的项目都上传到 github 仓库」）：
+
+  1. **新项目不自动发布** —— 用户明确说「提交 / 上传」时才发布，发布时加 `--new`；
+  2. **已发布的项目更新后自动提交推送** —— 仓库里已有同名顶层文件夹就算已发布，
+     脚本自己判定并直接推，不再二次确认、不用再问用户。
+
+本脚本就是这两条的可执行版本：一条命令完成「判定发布状态 → 体检 → 密钥扫描 → 推送 → 回执」。
 
 用法：
     python push_project.py <项目目录> [选项]
+    python push_project.py --status        # 只列远端已发布的项目（判定依据），不推送
 
     <项目目录>            要推的本地目录（如 ./my-tool 或 2026-10-21_某工具）
     选项：
+      --status            列出远端仓库的顶层项目文件夹（哪些算「已发布」）
+      --new               首次发布一个新项目（**必须用户明确要求才加**，否则退出码 5）
       --name NAME         仓库内的顶层文件夹名，默认取目录名（去掉日期前缀）
       --repo OWNER/REPO   默认 yzz103/yzz-dsh（可用环境变量 GH_REPO 覆盖）
-      --message MSG       提交信息，默认 "feat(<name>): 首次发布"
+      --message MSG       提交信息；新项目默认 "feat(<name>): 首次发布"，
+                          已发布项目默认 "chore(<name>): 更新（N 个文件）"
       --branch BRANCH     默认仓库默认分支
       --dry-run           只看计划：要推哪些文件、多大、缺什么骨架，不联网不推送
       --allow-missing     骨架文件缺失也照推（默认拦下，退出码 1）
       --allow-local-paths 带本机专属路径（D:/APP 之类）也照推（默认拦，因为别人克隆后用不了）
       --force             允许覆盖已有分支 ref
-      --yes               跳过「目标文件夹已存在」的二次确认
+      --yes               兼容旧用法，现在无作用（已发布项目的更新本来就自动放行）
 
 退出码：0 成功 / 1 参数或体检失败 / 2 密钥扫描命中 / 3 推送失败 / 4 含本机专属路径
+        / 5 新项目却没加 --new（未获用户授权发布）
 
 骨架检查（用户 m02767「按通用框架提交」定的标准）：
     README.md、CHANGELOG.md、pyproject.toml、tests/（或同名的 test_*.py）
@@ -38,6 +48,12 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:  # 输出被管道接走时 Windows 默认 cp936，DSH 按 UTF-8 读会乱码
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001  老版本解释器没有 reconfigure
+    pass
 
 import mcp_github as core  # noqa: E402  （同目录，纯标准库）
 
@@ -162,13 +178,58 @@ def check_skeleton(root: Path) -> list[str]:
     return missing
 
 
+def remote_exists(gh, repo: str, path: str) -> bool:
+    """远端有该路径且非空 → True；404（路径不存在 / 空仓库）→ False。
+
+    ⚠️ `core.GitHub.contents()` 对不存在的路径是**抛 404**，不是返回 None，
+    所以判定「是否已发布」必须在这里吃掉 404，否则新项目会直接崩栈。
+    """
+    try:
+        return bool(with_retry(gh.contents, repo, path))
+    except core.GitHubError as exc:
+        if exc.status == 404:
+            return False
+        raise
+
+
+def show_status(repo: str) -> int:
+    """列出远端仓库里的顶层项目文件夹 —— 这些就是「已发布」的项目。"""
+    token, source = core.resolve_token()
+    if not token:
+        log("[x] 没找到 GitHub 令牌（--token / GITHUB_TOKEN / refs.GITHUB_TOKEN / gh auth token）")
+        return 3
+    gh = core.GitHub(token)
+    try:
+        entries = with_retry(gh.contents, repo, "") or []
+    except core.GitHubError as exc:
+        if exc.status == 404:      # 空仓库：一个提交都没有时根目录也是 404
+            entries = []
+        else:
+            log(f"[x] 读仓库失败（HTTP {exc.status}）：{exc}")
+            return 3
+    dirs = sorted(e["name"] for e in entries if e.get("type") == "dir")
+    log(f"仓库 {repo}　令牌来源：{source}")
+    if not dirs:
+        log("  还没有任何项目文件夹。")
+        return 0
+    log(f"已发布项目 {len(dirs)} 个（这些项目更新后会自动提交推送）：")
+    for d in dirs:
+        log(f"  - {d}/")
+    log("\n不在这张表里的就是新项目 —— 用户明确说要提交时才发布（加 --new）。")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="把一个项目目录推到 GitHub 仓库（默认 yzz103/yzz-dsh）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("用法：", 1)[1] if __doc__ else None,
     )
-    ap.add_argument("project", help="要推的本地目录")
+    ap.add_argument("project", nargs="?", default="", help="要推的本地目录（--status 时可省略）")
+    ap.add_argument("--status", action="store_true",
+                    help="只列出远端仓库已发布的顶层项目文件夹（判定「是否已发布」的依据）")
+    ap.add_argument("--new", action="store_true",
+                    help="首次发布一个新项目；用户明确要求提交时才加，否则退出码 5")
     ap.add_argument("--name", default="", help="仓库内顶层文件夹名（默认取目录名去掉日期前缀）")
     ap.add_argument("--repo", default=os.environ.get("GH_REPO") or DEFAULT_REPO)
     ap.add_argument("--message", default="", help="提交信息")
@@ -178,8 +239,14 @@ def main() -> int:
     ap.add_argument("--allow-local-paths", action="store_true",
                     help="含本机专属路径（如 D 盘安装目录）也照推")
     ap.add_argument("--force", action="store_true", help="允许强制覆盖分支 ref")
-    ap.add_argument("--yes", action="store_true", help="跳过二次确认")
+    ap.add_argument("--yes", action="store_true", help="兼容旧用法，现在无作用")
     args = ap.parse_args()
+
+    if args.status:
+        return show_status(args.repo)
+    if not args.project:
+        log("[x] 缺项目目录参数（只想看已发布项目就加 --status）")
+        return 1
 
     root = Path(args.project).expanduser().resolve()
     if not root.is_dir():
@@ -190,8 +257,6 @@ def main() -> int:
     if not name:
         log("[x] 项目名算不出来，请用 --name 指定")
         return 1
-
-    message = args.message or f"feat({name}): 首次发布"
 
     log(f"本地目录：{root}")
     log(f"目标仓库：{args.repo}　文件夹：{name}/")
@@ -247,6 +312,7 @@ def main() -> int:
 
     if args.dry_run:
         log("\n[dry-run] 到此为止，没有联网、没有推送。")
+        log("          是否已发布要真推时才联网判定；先看已发布清单用 --status。")
         return 0
 
     # 4) 真推：按 MAX_FILES 分批，路径统一加 <name>/ 前缀
@@ -263,11 +329,19 @@ def main() -> int:
         log(f"[x] 读仓库失败（HTTP {exc.status}）：{exc}")
         return 3
 
-    exists = with_retry(gh.contents, args.repo, name)
-    if exists and not args.yes:
-        log(f"[?] 仓库里已存在 {name}/。继续会覆盖同名文件（不会删多余文件）。")
-        log("    确认继续请加 --yes。")
-        return 1
+    # 4.1) 发布状态判定（用户约定 2026-10-20：新项目不自动发，已发布项目更新自动推）
+    exists = remote_exists(gh, args.repo, name)
+    if exists:
+        log(f"\n[ok] 已发布项目（仓库里已有 {name}/）→ 更新自动提交推送")
+    elif not args.new:
+        log(f"\n[x] 仓库里没有 {name}/ —— 这是**新项目**，不自动发布。")
+        log("    约定：新项目要用户明确说「提交 / 上传」才发；用户确认后再加 --new 重跑。")
+        return 5
+    else:
+        log(f"\n[ok] 新项目首次发布（--new）：{name}/")
+    message = args.message or (
+        f"feat({name}): 首次发布" if not exists else f"chore({name}): 更新（{len(files)} 个文件）"
+    )
 
     branch = args.branch or info.get("default_branch") or "main"
     chunks = [files[i:i + core.MAX_FILES] for i in range(0, len(files), core.MAX_FILES)]
