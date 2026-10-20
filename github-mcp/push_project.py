@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""push_project.py —— 把一个项目目录推到 GitHub 仓库（`yzz103/yzz-dsh` 的某个顶层文件夹）。
+r"""push_project.py —— 把一个项目目录推到 GitHub 仓库（`yzz103/yzz-dsh` 的某个顶层文件夹）。
 
 用户约定（2026-10-20）：「以后的项目都上传到 github 仓库」。
 本脚本就是那句话的可执行版本：一条命令完成「体检 → 密钥扫描 → 推送 → 回执」。
@@ -7,18 +7,19 @@
 用法：
     python push_project.py <项目目录> [选项]
 
-    <项目目录>            要推的本地目录（如 D:\\DSH\\2026-10-21_某工具）
+    <项目目录>            要推的本地目录（如 ./my-tool 或 2026-10-21_某工具）
     选项：
       --name NAME         仓库内的顶层文件夹名，默认取目录名（去掉日期前缀）
-      --repo OWNER/REPO   默认 yzz103/yzz-dsh
+      --repo OWNER/REPO   默认 yzz103/yzz-dsh（可用环境变量 GH_REPO 覆盖）
       --message MSG       提交信息，默认 "feat(<name>): 首次发布"
       --branch BRANCH     默认仓库默认分支
       --dry-run           只看计划：要推哪些文件、多大、缺什么骨架，不联网不推送
-      --allow-missing     骨架文件缺失也照推（默认只警告，不拦）
+      --allow-missing     骨架文件缺失也照推（默认拦下，退出码 1）
+      --allow-local-paths 带本机专属路径（D:/APP 之类）也照推（默认拦，因为别人克隆后用不了）
       --force             允许覆盖已有分支 ref
       --yes               跳过「目标文件夹已存在」的二次确认
 
-退出码：0 成功 / 1 参数或体检失败 / 2 密钥扫描命中 / 3 推送失败
+退出码：0 成功 / 1 参数或体检失败 / 2 密钥扫描命中 / 3 推送失败 / 4 含本机专属路径
 
 骨架检查（用户 m02767「按通用框架提交」定的标准）：
     README.md、CHANGELOG.md、pyproject.toml、tests/（或同名的 test_*.py）
@@ -64,7 +65,7 @@ SECRET_PATTERNS = [
     ("Bearer 长串", re.compile(r"Bearer\s+[A-Za-z0-9_-]{20,}")),
 ]
 
-# 只是提示，不阻断：本机专属路径换台机器就跑不通
+# 默认阻断：本机专属路径换台机器就跑不通（--allow-local-paths 放行）
 HOST_PATH = re.compile(r"[A-Za-z]:\\\\?(?:APP|DSH|Program Files)[\\/]")
 
 TEXT_SUFFIXES = {
@@ -174,6 +175,8 @@ def main() -> int:
     ap.add_argument("--branch", default="", help="目标分支（默认仓库默认分支）")
     ap.add_argument("--dry-run", action="store_true", help="只看计划，不联网")
     ap.add_argument("--allow-missing", action="store_true", help="骨架缺失也照推")
+    ap.add_argument("--allow-local-paths", action="store_true",
+                    help="含本机专属路径（如 D 盘安装目录）也照推")
     ap.add_argument("--force", action="store_true", help="允许强制覆盖分支 ref")
     ap.add_argument("--yes", action="store_true", help="跳过二次确认")
     args = ap.parse_args()
@@ -220,14 +223,20 @@ def main() -> int:
     else:
         log("[ok] 骨架齐全：README / CHANGELOG / pyproject / tests")
 
-    # 3) 本机路径提示（不阻断）
+    # 3) 本机专属路径：默认拦住（别人克隆下来跑不通就是废包）
     host = scan_host_paths(files)
     if host:
-        log(f"[i] 有 {len(host)} 个文件写了本机专属路径（换机器要改）：")
+        log(f"\n[i] 有 {len(host)} 处本机专属路径（换台机器就用不了）：")
         for p, no, frag in host[:8]:
             log(f"    {p.relative_to(root)}:{no}  {frag}")
         if len(host) > 8:
             log(f"    …还有 {len(host) - 8} 处")
+        if args.allow_local_paths:
+            log("[!] --allow-local-paths：照推")
+        else:
+            log("[x] 已中止。改成相对路径 / 环境变量 / 命令行参数后再推；")
+            log("    确实要发就加 --allow-local-paths（别推只有你自己能跑的包）。")
+            return 4
 
     total = sum(p.stat().st_size for p in files)
     log(f"\n待推 {len(files)} 个文件，共 {core.human_size(total)}：")

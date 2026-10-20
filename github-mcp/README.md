@@ -22,6 +22,12 @@
 | `pyproject.toml` | PEP 621 元数据 + 命令行入口 |
 | `CHANGELOG.md` | 版本历史 |
 
+## 克隆即用
+
+没有写死本机路径：服务脚本与 `install_mcp_config.py` 都用**自身所在目录**定位，
+profile 走 `--profile` / `DSH_PROFILE_DIR`，令牌按下面六种方式找。
+换台机器只要 Python 3.9+（纯标准库），克隆下来 `python tests/test_mcp_github.py` 应全绿。
+
 ## 令牌（按顺序找，命中即用）
 
 1. 命令行 `--token`
@@ -103,8 +109,8 @@ python install_mcp_config.py --remove   # 撤销
 不想在对话里拼 `files[]` 的话，用 `push_project.py`（同目录，复用本服务的推送逻辑）：
 
 ```bash
-python push_project.py D:\DSH\2026-10-21_某工具 --dry-run   # 先看计划：推哪些、多大、缺什么
-python push_project.py D:\DSH\2026-10-21_某工具             # 真推，落到 <项目名>/ 下
+python push_project.py <项目目录> --dry-run        # 先看计划：推哪些、多大、缺什么
+python push_project.py <项目目录>                # 真推，落到 <项目名>/ 下
 ```
 
 它会依次做四件事：
@@ -113,7 +119,7 @@ python push_project.py D:\DSH\2026-10-21_某工具             # 真推，落到
    只打印「文件:行号」，不打印内容；
 2. **骨架体检**：`README.md`、`CHANGELOG.md`、`pyproject.toml`、`tests/`（缺了默认拦住，
    `--allow-missing` 可放行）；
-3. **本机路径提示**：扫出 `D:\APP\…` 这类换机器就失效的绝对路径，只提示不阻断；
+3. **本机路径硬门禁**：扫出盘符开头的本机安装路径（APP / DSH / Program Files），命中即中止（退出码 4），确认要发才加 `--allow-local-paths`；
 4. **分批推送**：按 `MAX_FILES`（100）切块，路径自动加 `<项目名>/` 前缀，仓库里已有同名
    文件夹时会要求 `--yes` 确认。
 

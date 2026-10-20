@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcp-github-rest"
-version = "1.0.6"
+version = "1.0.7"
 description = "GitHub REST API 的 MCP stdio 连接器：建仓库、批量推文件、读文件、看配额"
 readme = "README.md"
 requires-python = ">=3.9"

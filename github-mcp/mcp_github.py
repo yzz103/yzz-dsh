@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 SERVER_NAME = "mcp-github"
-SERVER_VERSION = "1.0.6"
+SERVER_VERSION = "1.0.7"
 SUPPORTED_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18", "2024-11-05"]
 DEFAULT_API = "https://api.github.com"
 API_VERSION = "2022-11-28"

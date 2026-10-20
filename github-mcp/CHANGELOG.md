@@ -9,6 +9,17 @@
 
 ---
 
+## [1.0.7] - 2026-10-21
+
+### 变更
+
+- **可移植性：别人克隆下来就能用**，不再依赖本机目录。
+  - `install_mcp_config.py` 改用 `sys.executable` 与脚本自身所在目录定位解释器和服务脚本，
+    profile 走 `--profile` / `DSH_PROFILE_DIR`（默认 desktop），并新增 `--remove`。
+  - `push_project.py` 的本机专属路径从「只提示」升级为**硬门禁**：扫到盘符开头的本机安装
+    路径即中止（退出码 4），确要发布才加 `--allow-local-paths`；`--repo` 支持 `GH_REPO`
+    环境变量；文档示例改成中性写法，脚本自身不会再被自己的门禁误伤。
+
 ## [1.0.6] - 2026-10-20
 
 ### 修复
@@ -32,7 +43,7 @@
   体检骨架（README / CHANGELOG / pyproject / tests）、密钥扫描（命中即中止，只报行号不报内容）、
   本机路径提示、按 `MAX_FILES` 分批推送、自动加 `<项目名>/` 前缀。
   支持 `--dry-run`（只出计划不联网）、`--allow-missing`、`--name`、`--yes`。
-  典型用法：`python push_project.py D:\DSH\2026-10-21_某工具 --dry-run`。
+  典型用法：`python push_project.py <项目目录> --dry-run`。
 - 推送遇到瞬时网络断连（`HTTP 0`）时**自动重试两次**（等 2s / 4s），覆盖读仓库、查目录、
   建 blob / tree / commit 全过程。本机到 `api.github.com` 实测偶发
   `SSL: UNEXPECTED_EOF_WHILE_READING`，第一次跑就撞上过一次。
