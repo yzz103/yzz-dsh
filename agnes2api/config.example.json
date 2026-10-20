@@ -1,0 +1,47 @@
+{
+  "_说明": "把这个文件复制成 config.json 再改成你自己的值；不复制也行，首次运行会自动生成带随机 admin_token 的 config.json。",
+  "_说明_base": "accounts[].base 可选，一般不填：留空时网关会自动探一遍（国际站 apihub.agnes-ai.com → 国内站 api.agnes-ai.cn），认这把 Key 的站就写进去。想手动指定就填 cn / com / 完整 URL。",
+  "_说明_auto_base": "auto_base=false 可关掉自动识别（只用于测试：加号时不再去探真实的两个站）。",
+
+  "host": "127.0.0.1",
+  "port": 7871,
+
+  "upstream": "https://apihub.agnes-ai.com/v1",
+  "auto_base": true,
+
+  "accounts": [
+    {
+      "label": "主账号",
+      "key": "sk-在这里填你的 Agnes API Key",
+      "enabled": true
+    },
+    {
+      "label": "备用账号（可单独指定上游和限速）",
+      "key": "sk-另一个账号的 Key",
+      "enabled": true,
+      "rpm": 20,
+      "base": "cn"
+    }
+  ],
+
+  "limits": {
+    "text_rpm": 10,
+    "image_rpm": { "1K": 10, "2K": 5, "3K": 1, "4K": 1 },
+    "video_rpm": 120,
+    "rpm_window": 60,
+    "wait_max_seconds": 3
+  },
+
+  "gallery": {
+    "enabled": true,
+    "keep": 200,
+    "save_b64": true,
+    "fetch_url": true,
+    "max_bytes": 41943040
+  },
+
+  "require_client_auth": false,
+  "client_keys": [],
+
+  "request_timeout": 180
+}

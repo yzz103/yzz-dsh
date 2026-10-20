@@ -1,0 +1,62 @@
+Agnes 本地网关 agnes2api v1.4.0 —— 使用说明
+================================================
+
+一、这是什么
+  把 Agnes AI 的免费图片/文本/视频接口，包装成一个本机 OpenAI 兼容网关。
+  你只需要配好 Agnes 的 API Key（可配多个号），后面任何支持 OpenAI 协议的
+  客户端（Cherry Studio、Open WebUI、自己写的脚本……）都把 base_url 指到这里。
+
+二、目录里有什么
+  agnes2api.exe     主程序（双击 = 启动网关，控制台窗口别关）
+  _internal\        程序依赖，勿删勿移
+  start-gateway.bat 备用启动脚本（双击效果同 exe，出错时能看到信息）
+  config.json       首次运行自动生成（含账号、端口、管理密码）
+  gallery\          生成的图片自动存这里，最多留 200 张（管理台可回看/删除）
+
+三、三步开跑
+  1. 双击 agnes2api.exe。
+  2. 控制台会打印管理台地址，形如
+        http://127.0.0.1:7871/admin?token=adm-xxxxxx
+     把它整条复制到浏览器打开 → 在页面里粘贴你的 Agnes API Key → 点「添加账号」。
+    **只填 Key 就够了**：标签、上游、每分钟上限都可以留空 —— 网关会自己探一遍
+    国际站和国内站，哪个认这把 Key 就用哪个。Key 在 https://platform.agnes-ai.com
+    （国际版）或 https://platform.agnes-ai.cn（国内版）的 API Keys 页创建。
+  3. 客户端里这样填：
+        Base URL : http://127.0.0.1:7871/v1
+        API Key  : 随便填（本机不校验；要校验就在 config.json 里把
+                   require_client_auth 设成 true 并配 client_keys）
+        模型     : agnes-image-2.5-flash（出图）/ agnes-3.0-flash（文本）
+
+四、常用命令（在控制台或 cmd 里，cd 到本目录后）
+  agnes2api.exe status                     看版本、端口、账号数、用量
+  agnes2api.exe accounts add sk-xxx         最省事：只给 Key，自动识别上游
+  agnes2api.exe accounts add "名字" sk-xxx  再加一个号
+  agnes2api.exe accounts list               列号（含每个号走哪个上游）
+  agnes2api.exe accounts disable acc-xxxx   临时停用
+  agnes2api.exe probe                       逐个号验 Key（故意非法的出图请求，不出图、不花钱）
+                                            某个号在当前的站上过不了鉴权时，会自动
+                                            换到另一个站并保存下来
+  agnes2api.exe accounts add "国内号" sk-xxx --base cn
+                                            不想让它自动判断时，可手动指定上游：
+                                            cn=国内版 api.agnes-ai.cn，
+                                            com=国际版 apihub.agnes-ai.com，也可给完整 URL
+
+五、注意
+  * 出图请用 POST /v1/images/generations，size 必填（如 1024x1024、2K）。
+    网关会自动把 response_format 塞进 extra_body —— 这是 Agnes 的硬要求，
+    直接用官方接口的话很容易在这里踩坑。
+  * 免费账号有每分钟次数限制（1K 图约 10 张/分钟，2K 5 张，3K/4K 1 张）。
+    配多个号后，某个号被限流会自动切下一个号；配在同一个号上的
+    「每分钟上限」也会各自生效。
+  * 国际版 / 国内版是两套域：国际站的 Key 走 apihub.agnes-ai.com，
+    国内站（platform.agnes-ai.cn）签发的 Key **只在 api.agnes-ai.cn 上认**，
+    拿到国际站用会报 401 Invalid token。加号时什么都不用填，网关会自动认出来
+    （想手动指定就写 --base cn）。
+  * 改 config.json 后要重启本程序才生效。
+  * 端口被占用：改 config.json 里的 "port"，或启动时加 --port 7900。
+
+六、为什么是文件夹而不是单文件 exe
+  单文件版在本机实测会报
+      [PYI-ERROR] Could not create temporary directory!
+  （onefile 每次启动要把自己解压到系统临时目录，本机的策略/杀软拦了这一步）。
+  文件夹版不解压临时文件，双击即用，不受影响。

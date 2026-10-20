@@ -1,0 +1,22 @@
+# 通用忽略规则
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+_build/
+dist/
+build/
+*.spec
+*.zip
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# 密钥与运行态（永远不进仓库）
+config.json
+stats.json
+gallery/
+serve.log
+serve.err
+*.log
