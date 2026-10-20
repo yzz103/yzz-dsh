@@ -33,6 +33,7 @@ import argparse
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -75,6 +76,18 @@ TEXT_SUFFIXES = {
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def with_retry(fn, *args, tries: int = 3, **kwargs):
+    """本机到 api.github.com 偶发 SSL 断连（实测过两次），网络类错误自动重试。"""
+    for attempt in range(1, tries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except core.GitHubError as exc:
+            if exc.status != 0 or attempt == tries:
+                raise
+            log(f"[!] 网络断开（{exc}），{attempt * 2}s 后重试…")
+            time.sleep(attempt * 2)
 
 
 def project_name_from_dir(dirname: str) -> str:
@@ -236,12 +249,12 @@ def main() -> int:
     gh = core.GitHub(token)
 
     try:
-        info = gh.get_repo(args.repo)
+        info = with_retry(gh.get_repo, args.repo)
     except core.GitHubError as exc:
         log(f"[x] 读仓库失败（HTTP {exc.status}）：{exc}")
         return 3
 
-    exists = gh.contents(args.repo, name)
+    exists = with_retry(gh.contents, args.repo, name)
     if exists and not args.yes:
         log(f"[?] 仓库里已存在 {name}/。继续会覆盖同名文件（不会删多余文件）。")
         log("    确认继续请加 --yes。")
@@ -257,10 +270,14 @@ def main() -> int:
             "encoding": "path",
         } for p in chunk]
         msg = message if len(chunks) == 1 else f"{message}（第 {idx}/{len(chunks)} 批）"
-        blocks, is_error = core.tool_push(gh, {
-            "repo": args.repo, "files": payload, "message": msg,
-            "branch": args.branch, "force": args.force,
-        })
+        try:
+            blocks, is_error = with_retry(core.tool_push, gh, {
+                "repo": args.repo, "files": payload, "message": msg,
+                "branch": args.branch, "force": args.force,
+            })
+        except core.GitHubError as exc:
+            log(f"[x] 推送失败：{exc}")
+            return 3
         text = "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
         if is_error:
             log(f"[x] 推送失败：{text}")

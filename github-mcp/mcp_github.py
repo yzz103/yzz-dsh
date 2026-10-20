@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 SERVER_NAME = "mcp-github"
-SERVER_VERSION = "1.0.5"
+SERVER_VERSION = "1.0.6"
 SUPPORTED_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18", "2024-11-05"]
 DEFAULT_API = "https://api.github.com"
 API_VERSION = "2022-11-28"
@@ -144,7 +145,14 @@ class GitHub:
         self.timeout = timeout
 
     # -- 底层 --------------------------------------------------------
-    def _request(self, method: str, path: str, body: Any = None) -> tuple[int, Any, dict]:
+    def _request(self, method: str, path: str, body: Any = None,
+                 tries: int = 4) -> tuple[int, Any, dict]:
+        """发一次 API 请求。网络层错误（断连 / SSL EOF / 超时）自动重试。
+
+        本机到 `api.github.com` 实测偶发 `SSL: UNEXPECTED_EOF_WHILE_READING`
+        （2026-10-20 一次推送连撞三次），GITHUB 又是「一次推送十几个请求」，
+        所以重试放在单个请求这一层，而不是整次推送重来。
+        """
         url = path if path.startswith("http") else self.api + path
         data = None
         headers = {
@@ -157,18 +165,27 @@ class GitHub:
         if body is not None:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
-        req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                raw = resp.read()
-                hdrs = dict(resp.headers)
-                status = resp.status
-        except urllib.error.HTTPError as exc:
-            raw = exc.read() or b""
-            hdrs = dict(exc.headers or {})
-            status = exc.code
-        except urllib.error.URLError as exc:
-            raise GitHubError(0, f"网络不通：{exc.reason}") from exc
+        status = 0
+        raw = b""
+        hdrs: dict = {}
+        for attempt in range(1, tries + 1):
+            req = urllib.request.Request(url, data=data, headers=headers, method=method)
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    raw = resp.read()
+                    hdrs = dict(resp.headers)
+                    status = resp.status
+                break
+            except urllib.error.HTTPError as exc:
+                raw = exc.read() or b""
+                hdrs = dict(exc.headers or {})
+                status = exc.code
+                break
+            except (urllib.error.URLError, OSError) as exc:
+                if attempt == tries:
+                    reason = getattr(exc, "reason", exc)
+                    raise GitHubError(0, f"网络不通（已重试 {tries} 次）：{reason}") from exc
+                time.sleep(min(2 ** (attempt - 1), 4))
         try:
             parsed = json.loads(raw.decode("utf-8")) if raw else None
         except (UnicodeDecodeError, json.JSONDecodeError):
