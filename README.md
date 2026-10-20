@@ -5,6 +5,7 @@
 | 项目 | 一句话 | 语言/依赖 |
 |---|---|---|
 | [agnes2api](agnes2api/) | Agnes AI 生图的多账号本地网关：OpenAI 兼容 API + 管理台 + MCP 工具 | Python 3.9+（纯标准库） |
+| [github-mcp](github-mcp/) | 给 MCP 客户端用的 GitHub 连接器：建仓库、批量推文件、读文件、看配额 | Python 3.9+（纯标准库） |
 
 ## 目录约定
 
@@ -12,10 +13,14 @@
 yzz-dsh/
 ├─ README.md          这个索引
 ├─ .gitignore         全仓库通用忽略规则
-└─ agnes2api/         项目一：Agnes 生图网关
-   ├─ README.md       项目说明（能力、部署、接口、配置）
-   ├─ agnes2api.py    网关主程序
-   ├─ mcp_agnes.py    MCP 连接器
+├─ agnes2api/         项目一：Agnes 生图网关
+│  ├─ README.md       项目说明（能力、部署、接口、配置）
+│  ├─ agnes2api.py    网关主程序
+│  ├─ mcp_agnes.py    MCP 连接器
+│  └─ …
+└─ github-mcp/        项目二：GitHub 连接器
+   ├─ README.md
+   ├─ mcp_github.py   MCP 服务
    └─ …
 ```
 
