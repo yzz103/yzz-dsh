@@ -43,7 +43,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.4.1"
+VERSION = "1.4.3"
 DEFAULT_UPSTREAM = "https://apihub.agnes-ai.com/v1"
 # 国内版（实测 2026-10-20）：apihub.agnes-ai.cn 只是国际站的镜像；
 # 真·国内站是 api.agnes-ai.cn，国内账号的 key 只在它上面认（中文报错「无效的令牌 / 当前分组不支持模型」）。
@@ -1412,6 +1412,105 @@ def make_handler(gw: Gateway):
 # 启动
 # --------------------------------------------------------------------------- #
 
+_SINGLE_INSTANCE_GUARD: object | None = None
+
+
+def acquire_single_instance(port: int) -> object | None:
+    """单实例守卫：同一个端口只允许一个网关进程（Windows 用命名互斥体）。
+
+    返回：
+      - 句柄/对象    拿到锁（进程存活期间一直持有，退出时由系统或 GC 回收）
+      - None         已经有实例在监听这个端口，调用方应该提示并退出
+      - object()     平台不支持 / 创建失败 —— fail-open，宁可多开一次也别把网关搞挂
+    """
+    name = f"Local\\agnes2api-gateway-port{port}"
+    if os.name != "nt":
+        try:
+            import fcntl
+            lock = Path(os.environ.get("TEMP") or "/tmp") / f"agnes2api-port{port}.lock"
+            fh = open(lock, "w")
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except (OSError, ImportError):
+            return object()
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateMutexW.restype = wintypes.HANDLE
+        k32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+        handle = k32.CreateMutexW(None, True, name)
+        err = ctypes.get_last_error()
+        if not handle:
+            return object()
+        if err == 183:            # ERROR_ALREADY_EXISTS：已经有一个实例持有这把锁
+            k32.CloseHandle(handle)
+            return None
+        return handle
+    except Exception:             # noqa: BLE001
+        return object()
+
+
+def probe_running(host: str, port: int) -> dict | None:
+    """探一下已经在跑的实例（/health），只为把提示写得具体些。"""
+    try:
+        url = f"http://{host}:{port}/health"
+        with urllib.request.urlopen(url, timeout=2.0) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:             # noqa: BLE001
+        return None
+
+
+def hold_console(seconds: float = 30.0) -> None:
+    """双击启动的窗口别一闪就没：等回车，最多 seconds 秒。
+
+    只在「标准输入是控制台」时生效（命令行/无窗口模式立即返回），
+    这样脚本与自检流程不会被卡住。
+    """
+    try:
+        if not sys.stdin.isatty():
+            return
+    except Exception:             # noqa: BLE001
+        return
+    try:
+        waiter = threading.Thread(target=sys.stdin.readline, daemon=True)
+        waiter.start()
+        waiter.join(0.5)
+        if waiter.is_alive():     # stdin 真有人在看才提示；管道/EOF 场景直接走人
+            log(f"\n窗口会在 {int(seconds)} 秒后自动关闭，按回车可立刻关闭。")
+            waiter.join(max(0.0, seconds - 0.5))
+    except Exception:             # noqa: BLE001
+        try:
+            time.sleep(seconds)
+        except Exception:         # noqa: BLE001
+            pass
+
+
+def report_duplicate(gw: Gateway, host: str, port: int) -> int:
+    """「第二次双击同一个 exe」的分支：说清情况、把管理台打开、窗口留着可读。
+
+    退出码 3 = 重复打开（不是崩溃），调用方/脚本可据此判断。
+    """
+    log(f"✗ 端口 {port} 上已经有一个网关在跑了 —— 这是重复打开，本实例不启动。")
+    info = probe_running(host, port)
+    if info:
+        log(f"  正在运行：v{info.get('version', '?')}"
+            f"，账号 {info.get('accounts', '?')} 个")
+    else:
+        log("  但 /health 没回应：端口被别的程序占着，或者它正在启动中。")
+    admin_url = f"http://{host}:{port}/admin?token={gw.cfg.admin_token}"
+    log(f"  管理台（账号 / 生成记录）：{admin_url}")
+    log("  要同时跑第二个实例请换端口：agnes2api.exe serve --port 7872")
+    try:
+        if sys.stdin.isatty():    # 双击打开时顺手把管理台弹出来
+            import webbrowser
+            webbrowser.open(admin_url)
+    except Exception:             # noqa: BLE001
+        pass
+    hold_console()
+    return 3
+
+
 def build_server(gw: Gateway, host: str, port: int) -> ThreadingHTTPServer:
     httpd = ThreadingHTTPServer((host, port), make_handler(gw))
     httpd.daemon_threads = True
@@ -1421,9 +1520,16 @@ def build_server(gw: Gateway, host: str, port: int) -> ThreadingHTTPServer:
 
 
 def cmd_serve(args) -> int:
+    global _SINGLE_INSTANCE_GUARD
     gw = Gateway(Path(args.config))
     host = args.host or gw.cfg.data["host"]
     port = args.port or gw.cfg.data["port"]
+    guard = acquire_single_instance(int(port))
+    if guard is None:
+        # 重复打开同一个 exe：不起第二个（抢账号/抢统计/抢端口），
+        # 但也不能一闪就没 —— 把状态说清、打开管理台、窗口留 30 秒。
+        return report_duplicate(gw, host, int(port))
+    _SINGLE_INSTANCE_GUARD = guard       # 引用住，进程存活期间别让 GC 放锁
     httpd = build_server(gw, host, port)
     real_port = httpd.server_address[1]
     admin_url = f"http://{host}:{real_port}/admin?token={gw.cfg.admin_token}"

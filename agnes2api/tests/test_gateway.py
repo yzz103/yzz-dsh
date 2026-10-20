@@ -570,6 +570,17 @@ def main() -> int:
     cn.shutdown()
     BAD.discard("sk-cn-only")
 
+    # 23 单实例守卫：同一端口第二次获取必然失败（拿不到 = None）
+    guard_port = 7999
+    g_a = gw.acquire_single_instance(guard_port)
+    g_b = gw.acquire_single_instance(guard_port)
+    check("23 单实例守卫：同端口第二次拿不到锁（返回 None）",
+          g_a is not None and g_b is None, f"first={type(g_a).__name__} second={g_b}")
+
+    # 24 探活：没人监听的端口返回 None，不抛异常
+    probe = gw.probe_running("127.0.0.1", guard_port)
+    check("24 probe_running：无实例时返回 None 且不抛异常", probe is None, f"{probe}")
+
     # 汇总
     ok = sum(1 for _, o, _ in RESULTS if o)
     total = len(RESULTS)

@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 SERVER_NAME = "mcp-agnes"
-SERVER_VERSION = "1.2.1"
+SERVER_VERSION = "1.2.2"
 SUPPORTED_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18", "2024-11-05"]
 DEFAULT_BASE = "http://127.0.0.1:7871"
 DEFAULT_MODEL = "agnes-image-2.5-flash"
@@ -411,6 +411,15 @@ def handle(msg: dict, gw: Gateway) -> dict | None:
 
 
 def main() -> int:
+    # 手动双击 exe 时 stdin 是控制台：stdio 协议服务没有交互界面，直接说清楚并退出，
+    # 免得留下一个「打开了但什么都不干」的进程让人以为它在工作。
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            log("这是给 DSH 调用的 MCP stdio 服务：手动打开没有界面、也不会出图。")
+            log("生图请直接在对话里让我调用 mcp__agnes__generate_image；本窗口可以直接关掉。")
+            return 2
+    except Exception:  # noqa: BLE001
+        pass
     ap = argparse.ArgumentParser(description="Agnes 生图 MCP 服务（stdio）")
     ap.add_argument("--base", default=os.environ.get("AGNES_BASE") or DEFAULT_BASE,
                     help="网关地址，默认 http://127.0.0.1:7871")

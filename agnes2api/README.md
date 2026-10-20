@@ -51,6 +51,7 @@ python gen_image.py --prompt "一只戴围巾的柯基犬坐在雪地里，写�
 | 网关地址 | 默认 `http://127.0.0.1:7871`，可用 `AGNES_BASE` 覆盖 |
 | `启动网关.bat` | 自动用 `py -3`，没有就退回 PATH 里的 `python`，都没有会明确报错 |
 | `install_mcp_config.py` | 用当前解释器 + 本脚本目录；profile 走 `--profile` 或 `DSH_PROFILE_DIR` |
+| `build_exe.py` | 打 exe 后的安装目录读 `--dest` → 环境变量 `AGNES2API_DIR` → 脚本同级 `../agnes2api` |
 | 依赖 | 只要 Python 3.8+ 标准库，`python agnes2api.py serve` 就是全部 |
 
 ## 接 MCP 客户端
@@ -106,7 +107,7 @@ python mcp_smoke.py --exe <mcp_agnes.exe>   # 打包模式
 ## 测试
 
 ```bash
-python tests/test_gateway.py   # 离线回归，假上游，34 项用例
+python tests/test_gateway.py   # 离线回归，假上游，36 项用例
 python mcp_smoke.py            # MCP 协议冒烟，13 项（会真出图，需网关在跑）
 ```
 
@@ -114,6 +115,8 @@ python mcp_smoke.py            # MCP 协议冒烟，13 项（会真出图，需�
 
 - Agnes 图片模型目前**限时免费**，只受 RPM 限流；具体以官方定价页为准。
 - 本项目只是协议转换与账号管理，**不代理、不破解**，出图能力与额度取决于你自己的账号。
+- **同一个端口只允许一个实例**（v1.4.2 起）：重复启动会打印正在跑的版本/账号数并以退出码 3 结束，顺便用默认浏览器打开管理台；`--port 7872` 可以故意跑第二个。
+- 看不到实例窗口不是故障：后台方式启动的进程没有控制台窗口，判断存活看 `/health`。
 - Windows 下打包成 exe 用 `PyInstaller --onedir`（**不要 `--onefile`**：单文件版启动时要把自己
   解压到临时目录，部分机器会报 `[PYI-ERROR] Could not create temporary directory!`）。
 
@@ -125,6 +128,7 @@ mcp_agnes.py           MCP 连接器（stdio）
 mcp_smoke.py           MCP 冒烟测试
 gen_image.py           命令行出图小工具
 install_mcp_config.py  一键写入 DSH 配置
+build_exe.py           一条命令重打包 exe（PyInstaller）
 config.example.json    配置模板
 启动网关.bat           Windows 双击启动
 pyproject.toml         PEP 621 元数据 + 命令行入口
