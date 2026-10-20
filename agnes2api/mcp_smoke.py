@@ -5,7 +5,7 @@ r"""mcp_agnes.py 冒烟 / 回归测试：用原始 JSON-RPC 走 stdio 行协议�
     python mcp_smoke.py                # 只测协议 + 网关状态（不出图，不花钱）
     python mcp_smoke.py --generate     # 额外真出一张图，验证端到端
     python mcp_smoke.py --size 2K      # 出图尺寸档位（1K/2K/3K/4K 或 1024x1024）
-    python mcp_smoke.py --exe "D:\APP\agnes2api\mcp\mcp_agnes.exe"   # 测打包版 exe
+    python mcp_smoke.py --exe .\mcp_agnes.exe                        # 测打包版 exe
 
 退出码：0 全部通过；1 有检查项失败。
 """

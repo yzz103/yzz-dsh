@@ -3,7 +3,7 @@
 r"""mcp_agnes —— 把本机 agnes2api 网关包装成一个 MCP 服务（stdio 传输）。
 
 零第三方依赖：只用 Python 标准库实现 MCP 的 JSON-RPC 2.0 / stdio 行协议。
-配套：D:\APP\agnes2api\agnes2api.exe（OpenAI 兼容网关，默认 127.0.0.1:7871）
+配套：agnes2api 本地网关（OpenAI 兼容，默认 127.0.0.1:7871）
 
 暴露的工具（工具名由 MCP 客户端加前缀，例如 mcp__agnes__generate_image）：
   generate_image(prompt, size, model, show)   出一张图，存进网关 gallery
@@ -13,7 +13,10 @@ r"""mcp_agnes —— 把本机 agnes2api 网关包装成一个 MCP 服务（stdi
 
 用法（一般由 DSH 的 mcp-client 拉起，不用手跑）：
   python mcp_agnes.py
-  python mcp_agnes.py --base http://127.0.0.1:7871 --config D:\APP\agnes2api\config.json
+  python mcp_agnes.py --base http://127.0.0.1:7871 --config ./config.json
+
+config.json 的查找顺序：--config → 环境变量 AGNES_CONFIG → 本脚本/本 exe 同目录 →
+上一级目录 → 当前目录。把本文件放进网关目录即可零配置运行。
 """
 from __future__ import annotations
 
@@ -29,26 +32,30 @@ from pathlib import Path
 from typing import Any
 
 SERVER_NAME = "mcp-agnes"
-SERVER_VERSION = "1.2.0"
+SERVER_VERSION = "1.2.1"
 SUPPORTED_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18", "2024-11-05"]
 DEFAULT_BASE = "http://127.0.0.1:7871"
-# 只在「本机默认安装位置」兜底；换设备用 --config / AGNES_CONFIG 指定，或干脆只给 --token
-DEFAULT_CFG = Path(r"D:\APP\agnes2api\config.json")
 DEFAULT_MODEL = "agnes-image-2.5-flash"
 
 
 def default_config() -> Path:
-    """按候选顺序找网关的 config.json：exe/脚本目录 → 上一级 → 当前目录 → 本机默认位置。"""
+    """按候选顺序找网关的 config.json；都不存在时返回最可能的位置（不报错）。
+
+    顺序：环境变量 AGNES_CONFIG → exe/脚本同目录 → 上一级 → 当前目录。
+    全部落空时返回「同目录/config.json」，由调用方给出提示。
+    """
+    env = os.environ.get("AGNES_CONFIG")
+    if env:
+        return Path(env)
     here = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
     cands: list[Path] = [
         here / "config.json",
         here.parent / "config.json",
         Path.cwd() / "config.json",
-        DEFAULT_CFG,
     ]
     for c in cands:
         try:
-            if c.exists():
+            if c.is_file():
                 return c
         except OSError:
             continue

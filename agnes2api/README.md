@@ -41,6 +41,18 @@ python gen_image.py --prompt "一只戴围巾的柯基犬坐在雪地里，写�
 
 管理台：`http://127.0.0.1:7871/admin?token=<config.json 里的 admin_token>`
 
+## 克隆即用
+
+仓库里没有写死任何本机路径，克隆到哪个目录都能跑：
+
+| 项 | 规则 |
+|---|---|
+| `config.json` | `--config` → 环境变量 `AGNES_CONFIG` → 脚本/exe 同目录 → 上一级 → 当前目录 |
+| 网关地址 | 默认 `http://127.0.0.1:7871`，可用 `AGNES_BASE` 覆盖 |
+| `启动网关.bat` | 自动用 `py -3`，没有就退回 PATH 里的 `python`，都没有会明确报错 |
+| `install_mcp_config.py` | 用当前解释器 + 本脚本目录；profile 走 `--profile` 或 `DSH_PROFILE_DIR` |
+| 依赖 | 只要 Python 3.8+ 标准库，`python agnes2api.py serve` 就是全部 |
+
 ## 接 MCP 客户端
 
 把 `mcp_agnes.py` 拷过去，在客户端的 `mcpServers` 里注册：

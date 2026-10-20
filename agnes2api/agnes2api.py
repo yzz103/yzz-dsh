@@ -43,7 +43,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 DEFAULT_UPSTREAM = "https://apihub.agnes-ai.com/v1"
 # 国内版（实测 2026-10-20）：apihub.agnes-ai.cn 只是国际站的镜像；
 # 真·国内站是 api.agnes-ai.cn，国内账号的 key 只在它上面认（中文报错「无效的令牌 / 当前分组不支持模型」）。
@@ -614,12 +614,16 @@ class Gallery:
         return name
 
     def fetch_remote(self, url: str) -> bytes | None:
-        """上游只回 URL 时顺便存一份图，失败返回 None（记录照样留 url）。"""
+        """上游只回 URL 时顺便存一份图，失败返回 None（记录照样留 url）。
+
+        超时压到 15s：存档是「顺手」的，不能让一个下不动的图片 URL 把客户端请求
+        拖到 60s。挖不到就只留元数据，管理台按 url 外链。
+        """
         if not url.lower().startswith(("http://", "https://")):
             return None
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "agnes2api/" + VERSION})
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=15) as resp:
                 data = resp.read(self.max_bytes + 1)
             return data if len(data) <= self.max_bytes else None
         except Exception:

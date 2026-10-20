@@ -8,6 +8,19 @@
 
 ---
 
+## [1.4.1] - 2026-10-21
+
+### Changed
+- **可移植性：别人克隆下来就能用**，代码里不再写死本机路径。
+  - `gen_image.py` / `mcp_agnes.py` 的 `config.json` 改为按顺序查找：
+    `--config` → 环境变量 `AGNES_CONFIG` → 本脚本/exe 同目录 → 上一级 → 当前目录。
+  - `gen_image.py` 的网关地址可用环境变量 `AGNES_BASE` 覆盖（默认 `http://127.0.0.1:7871`）。
+  - `install_mcp_config.py` 用 `sys.executable` 当解释器、按脚本自身目录推源码，
+    profile 目录走 `--profile` / `DSH_PROFILE_DIR`（默认 desktop），
+    exe 位置可用 `AGNES_MCP_EXE` 指定；新增 `--remove`。
+  - `启动网关.bat` 不再写死 Python 路径，改为 `py -3` → `python` 回退链，找不到才报错。
+- `mcp_agnes.py` 版本 1.2.0 → 1.2.1（同步上述查找顺序，去掉写死路径）。
+
 ## [1.4.0] - 2026-10-20
 
 ### 新增

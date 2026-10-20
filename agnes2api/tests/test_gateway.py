@@ -3,7 +3,7 @@
 """agnes2api 离线自测：用进程内假上游替身，不碰真网络、不需要真 key。
 
 跑法（bash）：
-  "/c/Program Files/Python312/python.exe" test_gateway.py
+  python test_gateway.py          # Windows 上 PATH 里有 python 即可
 
 覆盖：
   1  /health
@@ -209,6 +209,8 @@ def main() -> int:
                    "video_rpm": 120},
         # 这组用例的上游是本地假服务，关掉自动识别，免得加号时去探真实的国际站/国内站
         "auto_base": False,
+        # 假上游回的 url 是假的域名：测试必须完全离线，别让 gallery 去下载它
+        "gallery": {"enabled": True, "keep": 50, "save_b64": True, "fetch_url": False},
     }, ensure_ascii=False), encoding="utf-8")
 
     g = gw.Gateway(cfg_path, workdir / "stats.json")
@@ -323,13 +325,19 @@ def main() -> int:
 
     # ---------------- 10~12：限流切号相关（各起一个独立网关） ---------------- #
 
-    def new_gateway(tag, accounts, limits):
+    def new_gateway(tag, accounts, limits, extra=None):
         d = Path(tempfile.mkdtemp(prefix=f"agnes2api_t_{tag}_"))
         cfg = d / "config.json"
-        cfg.write_text(json.dumps({
+        body = {
             "host": "127.0.0.1", "port": 0, "upstream": upstream,
             "admin_token": "t", "accounts": accounts, "limits": limits,
-        }, ensure_ascii=False), encoding="utf-8")
+            # 默认关自动识别：这些用例的上游都是本地假服务，别去探真实的国际站/国内站
+            "auto_base": False,
+            # 假上游回的 url 是假域名：测试必须完全离线，别让 gallery 去下载
+            "gallery": {"enabled": True, "keep": 50, "save_b64": True, "fetch_url": False},
+        }
+        body.update(extra or {})
+        cfg.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
         gg = gw.Gateway(cfg, d / "stats.json")
         hh = gw.build_server(gg, "127.0.0.1", 0)
         threading.Thread(target=hh.serve_forever, daemon=True).start()
@@ -533,7 +541,8 @@ def main() -> int:
 
     g21, h21, b21 = new_gateway("auto", [], {
         "text_rpm": 10, "image_rpm": {"1K": 10, "2K": 5, "3K": 1, "4K": 1},
-        "video_rpm": 120, "rpm_window": 60, "wait_max_seconds": 0})
+        "video_rpm": 120, "rpm_window": 60, "wait_max_seconds": 0},
+        extra={"auto_base": True})
     g21.base_candidates = [upstream, cn_base]     # 先国际站（401）→ 再国内站（认）
     st21, body21 = post(b21 + "/admin/api/accounts",
                         {"label": "只填 Key 的号", "key": "sk-cn-only"}, token="t")

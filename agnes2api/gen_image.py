@@ -8,6 +8,7 @@ r"""接正在跑的 agnes2api（默认 7871），先探活再出一张图。
 import argparse
 import base64
 import json
+import os
 import struct
 import sys
 import time
@@ -16,8 +17,30 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_CFG = Path(r"D:\APP\agnes2api\config.json")
-BASE = "http://127.0.0.1:7871"
+BASE = os.environ.get("AGNES_BASE", "http://127.0.0.1:7871").rstrip("/")
+
+
+def find_config(explicit=None) -> Path:
+    """按顺序找网关的 config.json：--config → AGNES_CONFIG → 脚本同级 → 当前目录。
+
+    网关首次启动会在自己所在目录生成 config.json，所以把本脚本放在网关目录里
+    就能直接用，不用改代码。
+    """
+    cands = []
+    if explicit:
+        cands.append(Path(explicit))
+    env = os.environ.get("AGNES_CONFIG")
+    if env:
+        cands.append(Path(env))
+    cands += [HERE / "config.json", Path.cwd() / "config.json"]
+    for c in cands:
+        if c.is_file():
+            return c
+    raise SystemExit(
+        "找不到网关的 config.json（这个文件由网关首次启动时自动生成）。\n"
+        "  可用 --config 指定路径，或设置环境变量 AGNES_CONFIG，\n"
+        "  或把 config.json 放到本脚本同目录 / 当前目录。"
+    )
 
 
 def read_cfg(path):
@@ -61,17 +84,19 @@ def img_size(raw):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default=str(DEFAULT_CFG))
+    ap.add_argument("--config", default=None, help="网关 config.json 路径（默认自动查找）")
     ap.add_argument("--prompt", default="一只橘白色的小奶猫，坐在木地板上，阳光从窗户照进来，浅景深，写实摄影风格")
     ap.add_argument("--size", default="1024x1024")
     ap.add_argument("--model", default="agnes-image-2.5-flash")
     ap.add_argument("--probe", action="store_true", help="只探活，不出图")
     args = ap.parse_args()
 
-    cfg = read_cfg(args.config)
+    cfg_path = find_config(args.config)
+    cfg = read_cfg(cfg_path)
     token = cfg["admin_token"]
     accs = cfg.get("accounts") or []
-    print(f"配置      : {args.config}")
+    print(f"配置      : {cfg_path}")
+    print(f"网关      : {BASE}")
     print(f"账号数    : {len(accs)}  启用的: {sum(1 for a in accs if a.get('enabled', True))}")
 
     st, body, dt = call("/health")
