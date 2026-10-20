@@ -3,7 +3,7 @@
 r"""build_exe.py —— 把 agnes2api.py / mcp_agnes.py 重新打成 exe（PyInstaller）。
 
 为什么需要它（2026-10-21 实测教训）：
-    之前 `安装目录gnes2api.exe`（v1.4.0）和 `...\mcp\mcp_agnes.exe`（v1.1.0）
+    之前 `安装目录\agnes2api.exe`（v1.4.0）和 `...\mcp\mcp_agnes.exe`（v1.1.0）
     都是「打完之后源码又改了几轮」的陈旧产物。表现是 MCP 工具报
     `Remote end closed connection without response`、而同样提示词直连网关却正常 ——
     查了半天才发现跑的不是最新的代码。**改完源码就要重新打包，别让 exe 落后于源码。**
