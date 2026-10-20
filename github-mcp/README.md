@@ -15,9 +15,11 @@
 
 | 文件 | 作用 |
 |---|---|
-| `mcp_github.py` | MCP 服务本体（stdio 行协议，约 570 行） |
-| `test_mcp_github.py` | 离线测试：内置假 GitHub（本地随机端口），31+ 用例，不联网 |
+| `mcp_github.py` | MCP 服务本体（stdio 行协议，约 640 行） |
+| `tests/test_mcp_github.py` | 离线测试：内置假 GitHub（本地随机端口），37 项用例，不联网 |
 | `install_mcp_config.py` | 写入 / 撤销 DSH profile 的 MCP 条目 |
+| `pyproject.toml` | PEP 621 元数据 + 命令行入口 |
+| `CHANGELOG.md` | 版本历史 |
 
 ## 令牌（按顺序找，命中即用）
 
@@ -98,8 +100,8 @@ python install_mcp_config.py --remove   # 撤销
 ## 自测
 
 ```bash
-python test_mcp_github.py
+python tests/test_mcp_github.py
 ```
 
 内置假 GitHub，不联网、不动真仓库，覆盖握手、工具清单、建仓库、空仓库初始化（409 → Contents API）、
-增量提交、新分支、四类错误路径、无令牌提示、读文件。当前 **33/33 通过**。
+增量提交、新分支、四类错误路径、无令牌提示、读文件与目录。当前 **37/37 通过**。

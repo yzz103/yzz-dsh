@@ -94,8 +94,8 @@ python mcp_smoke.py --exe <mcp_agnes.exe>   # 打包模式
 ## 测试
 
 ```bash
-python test_gateway.py     # 离线回归，假上游，34 项用例
-python mcp_smoke.py        # MCP 协议冒烟，13 项
+python tests/test_gateway.py   # 离线回归，假上游，34 项用例
+python mcp_smoke.py            # MCP 协议冒烟，13 项（会真出图，需网关在跑）
 ```
 
 ## 说明
@@ -113,7 +113,10 @@ mcp_agnes.py           MCP 连接器（stdio）
 mcp_smoke.py           MCP 冒烟测试
 gen_image.py           命令行出图小工具
 install_mcp_config.py  一键写入 DSH 配置
-test_gateway.py        网关离线回归测试
 config.example.json    配置模板
+启动网关.bat           Windows 双击启动
+pyproject.toml         PEP 621 元数据 + 命令行入口
+CHANGELOG.md           版本历史
 release/               发行包里的启动脚本与说明
+tests/test_gateway.py  网关离线回归测试
 ```

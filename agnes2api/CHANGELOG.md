@@ -1,0 +1,125 @@
+# Changelog · agnes2api
+
+本文件记录本项目所有值得注意的变更。
+格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
+版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+
+版本号与 `agnes2api.py` 里的 `VERSION` 常量、以及 `pyproject.toml` 的 `version` **三处必须一致**。
+
+---
+
+## [1.4.0] - 2026-10-20
+
+### 新增
+
+- **自动识别上游**：加号时只填 Key 也能用。新增 `detect_base()`，
+  依次探测国际站（`https://apihub.agnes-ai.com/v1`）与国内站（`https://api.agnes-ai.cn/v1`），
+  401/403 视为「该站不认这把 Key」，其它任何状态视为鉴权通过，命中的站自动写进账号。
+- 新配置 `auto_base`（默认 `true`）；管理台「上游」输入框留空即走自动识别。
+- 探活时若发现账号的站选错了，**自动纠正并落盘**，响应里带 `fixed_base`。
+- CLI `accounts add [标签] KEY`：标签可省略；不传 `--base` 时自动识别。
+
+### 修复
+
+- 管理台页头 `<span id="base">` 与加号表单 `<input id="base">` **id 撞名**，
+  导致 `getElementById('base').value` 取到 `undefined`，加号请求必抛错
+  —— v1.3.0 里那个「上游」输入框其实一次都没生效。页头改名为 `hostline`。
+
+### 测试
+
+- 34/34 通过。新增 `CnUpstream` 假上游与用例 21（只填 Key 自动落国内站）、
+  21b（两站都不认 → 400 且不入池）、22（探活发现选错站 → 自动纠正并持久化）。
+
+---
+
+## [1.3.0] - 2026-10-20
+
+### 新增
+
+- **按账号指定上游**：`accounts[].base` 支持 `"cn"` / `"com"` / 完整 URL 三种写法，
+  由 `normalize_base()` 归一。新增常量 `DEFAULT_UPSTREAM_CN = "https://api.agnes-ai.cn/v1"`。
+- CLI `accounts add … [--base cn|com|URL]`，`accounts list` 多一列「上游」。
+- 管理台账号行显示所属站点域名。
+- 文档新增「国际版 vs 国内版」一节：两套域名不通用，`apihub.agnes-ai.cn` 只是国际站镜像。
+
+### 修复
+
+- `Account.to_dict()` 必须写回 `base`，否则每次持久化都会把这个字段抹掉（与 `rpm` 同一个坑）。
+
+### 测试
+
+- 31/31 通过。新增 19（第二个假上游，证明请求真打到指定站）、19b（`base` 重启不丢）、
+  20（`normalize_base` 四态归一）。
+
+---
+
+## [1.2.0] - 2026-10-20
+
+### 新增
+
+- **生成记录（gallery）**：把每次出图的元数据与图片本体存到 `gallery/`，
+  管理台以缩略图墙展示，支持按提示词/模型筛选、单张删除、一键清空。
+  新配置 `gallery.{enabled,keep,save_b64,fetch_url,max_bytes}`。
+- **控制台请求流水**：每笔请求打一行
+  `#序号 | 时间 | 模型 | 类型 | 状态码 | 账号 | 耗时 | 备注`，形似 wb2api。
+- 新增 `sniff_ext()`：靠魔数（PNG/JPEG/WebP/GIF）判定图片格式，不信任扩展名。
+- 新增 4 个管理接口：`GET /admin/api/gallery`、`GET /admin/api/gallery/file/<name>`、
+  `POST /admin/api/gallery/clear`、`DELETE /admin/api/gallery/<id>`。
+
+### 测试
+
+- 28/28 通过。新增 15（url 分支也记元数据）、16（base64 落盘成真文件、
+  用 `?token=` 取回）、17（单删连文件一起删）、18（清空）。
+
+---
+
+## [1.1.1] - 2026-10-20
+
+### 修复
+
+- **首次运行会崩**：`Config._load()` 在自动保存时 `self.data` 还没赋值 →
+  `AttributeError: 'Config' object has no attribute 'data'`。改为先建目录再原子写文件。
+- `/v1/models` 在无可用账号时返回空 `data: []`，改为回退到内置的 `KNOWN_MODELS`（10 个）。
+- **探活误判**：原来用 `/v1/models` 验 Key，但该接口实测**不校验 token**（假 Key 也回 200），
+  会把坏 Key 判成好的。改成故意用不存在的模型名发出图请求（401=无效，其它=有效），
+  不消耗额度、不出图。
+
+### 新增
+
+- 出 Windows exe 发行包（onedir 形态）。
+
+### 测试
+
+- 24/24 通过（新增 7e/7e2 探活用例、13 首跑建 config、14 无号回退模型清单）。
+
+---
+
+## [1.1.0] - 2026-10-20
+
+### 新增
+
+- **按号覆盖每分钟上限**：`accounts[].rpm`，付费号可单独放宽。
+- **本地限流短等待**：命中本地 RPM 上限时不再直接 429，而是最多等
+  `limits.wait_max_seconds`（默认 3 秒）看有没有号滑出窗口。
+- `limits.rpm_window`（默认 60 秒）可配，窗口不再写死。
+- 新增 `app_dir()`：打成 exe 后配置写在 exe 旁边，不会落到临时解压目录里丢失。
+
+### 测试
+
+- 21/21 通过（新增 10/10b 上游 429 时本请求内切号并冷却 60 秒、
+  11/11b 号级 rpm 覆盖、12 窗口即将滑出时等待约 1 秒后放行）。
+
+---
+
+## [1.0.0] - 2026-10-20
+
+### 新增
+
+- 首个版本：本地 OpenAI 兼容图片网关（`POST /v1/images/generations`、`GET /v1/models`）。
+- 多账号池：轮换、失败冷却、每分钟请求数限制（按 1K/2K/3K/4K 分档）。
+- 管理台 `/admin`：账号增删启停、逐号探活、实时状态、用量统计。
+- 数据文件 `config.json`（含明文 Key）与 `stats.json`，首次运行自动生成。
+
+### 测试
+
+- 16/16 通过：假上游离线回归，覆盖轮换、冷却、限流、探活、错误路径。

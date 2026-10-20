@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-github-rest"
+version = "1.0.4"
+description = "GitHub REST API 的 MCP stdio 连接器：建仓库、批量推文件、读文件、看配额"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "yzz103" }]
+keywords = ["mcp", "model-context-protocol", "github", "rest", "stdio"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/yzz103/yzz-dsh/tree/main/github-mcp"
+
+[project.scripts]
+mcp-github = "mcp_github:main"
+github-mcp-install = "install_mcp_config:main"
+
+[tool.setuptools]
+py-modules = ["mcp_github", "install_mcp_config"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
