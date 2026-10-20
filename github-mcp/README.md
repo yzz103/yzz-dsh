@@ -18,6 +18,7 @@
 | `mcp_github.py` | MCP 服务本体（stdio 行协议，约 640 行） |
 | `tests/test_mcp_github.py` | 离线测试：内置假 GitHub（本地随机端口），37 项用例，不联网 |
 | `install_mcp_config.py` | 写入 / 撤销 DSH profile 的 MCP 条目 |
+| `push_project.py` | 一键发布：体检骨架 → 密钥扫描 → 分批推到 `<项目名>/`（支持 `--dry-run`） |
 | `pyproject.toml` | PEP 621 元数据 + 命令行入口 |
 | `CHANGELOG.md` | 版本历史 |
 
@@ -96,6 +97,27 @@ python install_mcp_config.py --remove   # 撤销
   }
 }
 ```
+
+## 一键发布一个项目
+
+不想在对话里拼 `files[]` 的话，用 `push_project.py`（同目录，复用本服务的推送逻辑）：
+
+```bash
+python push_project.py D:\DSH\2026-10-21_某工具 --dry-run   # 先看计划：推哪些、多大、缺什么
+python push_project.py D:\DSH\2026-10-21_某工具             # 真推，落到 <项目名>/ 下
+```
+
+它会依次做四件事：
+
+1. **密钥扫描**（`sk-` / `adm-` / `gh[oprsu]_` / `AKIA` / `Bearer 长串`）——命中就中止，
+   只打印「文件:行号」，不打印内容；
+2. **骨架体检**：`README.md`、`CHANGELOG.md`、`pyproject.toml`、`tests/`（缺了默认拦住，
+   `--allow-missing` 可放行）；
+3. **本机路径提示**：扫出 `D:\APP\…` 这类换机器就失效的绝对路径，只提示不阻断；
+4. **分批推送**：按 `MAX_FILES`（100）切块，路径自动加 `<项目名>/` 前缀，仓库里已有同名
+   文件夹时会要求 `--yes` 确认。
+
+常用参数：`--name`（改名）、`--repo`（换仓库）、`--message`（提交信息）、`--branch`。
 
 ## 自测
 
