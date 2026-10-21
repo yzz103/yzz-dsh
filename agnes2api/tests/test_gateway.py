@@ -50,6 +50,8 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 # --------------------------------------------------------------------------- #
 
 SEEN: dict = {"bodies": [], "keys": []}
+# 视频任务只在建它的那个 key 上可见（模拟真实上游：换号查就是 task_not_exist）
+TASK_OWNER: dict = {}
 VALID_KEYS = {"sk-good-1", "sk-good-2", "sk-not-a-real-key"}
 FLAKY_429 = {"sk-flaky-429"}
 BAD = {"sk-bad-401"}
@@ -87,7 +89,13 @@ class FakeUpstream(BaseHTTPRequestHandler):
                 {"id": "agnes-image-2.0-flash"}, {"id": "agnes-image-2.5-flash"},
                 {"id": "agnes-2.5-flash"}]})
         if p.startswith("/v1/videos/"):
-            return self._send(200, {"id": "v-1", "status": "succeeded"})
+            tid = p.rstrip("/").rsplit("/", 1)[-1]
+            owner = TASK_OWNER.get(tid)
+            if owner is not None and owner != key:
+                return self._send(400, {"code": "task_not_exist",
+                                        "message": "task not found"})
+            return self._send(200, {"id": tid, "status": "succeeded",
+                                    "metadata": {"url": "https://fake.example/v.mp4"}})
         self._send(404, {"error": {"message": "no route"}})
 
     def do_POST(self):
@@ -133,7 +141,9 @@ class FakeUpstream(BaseHTTPRequestHandler):
             return self._send(200, {"choices": [{"message": {"content": "hi"}}]})
 
         if p in ("/v1/videos", "/v1/video/generations"):
-            return self._send(200, {"id": "v-1", "status": "queued"})
+            tid = "task_" + (key[-6:] or "anon")
+            TASK_OWNER[tid] = key
+            return self._send(200, {"id": "v-1", "video_id": tid, "status": "queued"})
 
         self._send(404, {"error": {"message": "no route"}})
 
@@ -582,6 +592,29 @@ def main() -> int:
     h21.shutdown()
     cn.shutdown()
     BAD.discard("sk-cn-only")
+
+    # 24 视频任务粘号：轮询只问「建它的那个号」（换号上游会回 task_not_exist）
+    g24, h24, b24 = new_gateway("vidpin", [
+        {"label": "甲号", "key": "sk-vid-aaa1", "enabled": True},
+        {"label": "乙号", "key": "sk-vid-bbb2", "enabled": True},
+    ], {"text_rpm": 10, "image_rpm": {"1K": 10, "2K": 5, "3K": 1, "4K": 1},
+        "video_rpm": 120, "rpm_window": 60, "wait_max_seconds": 0})
+    SEEN["keys"].clear()
+    st, body = post(b24 + "/v1/videos", {"model": "agnes-video-2.5-flash",
+                                        "prompt": "粘号", "seconds": "4"})
+    tid = (json.loads(body).get("video_id") or "") if st == 200 else ""
+    owner_key = SEEN["keys"][0] if SEEN["keys"] else ""
+    codes, keys_used = [], []
+    for _ in range(6):
+        SEEN["keys"].clear()
+        c, _b = get(b24 + "/v1/videos/" + tid)
+        codes.append(c)
+        keys_used.extend(SEEN["keys"])
+    check("24 视频轮询粘住建任务的号（6 次全 200，且只用那个 key）",
+          st == 200 and bool(tid) and codes == [200] * 6
+          and set(keys_used) == {owner_key},
+          f"建={st} tid={tid} codes={codes} keys={sorted(set(keys_used))}")
+    h24.shutdown()
 
     # 汇总
     ok = sum(1 for _, o, _ in RESULTS if o)

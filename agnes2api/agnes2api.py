@@ -43,7 +43,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.4.5"
+VERSION = "1.4.6"
 DEFAULT_UPSTREAM = "https://apihub.agnes-ai.com/v1"
 # 按请求类型的超时（秒）。图片/文本用 request_timeout（默认 180），视频单独放宽：
 # 实测国际站建任务有整笔卡满 180 秒的情况，收紧的后果是「明明能出片却判成网络不通」。
@@ -372,9 +372,11 @@ class AccountPool:
         return int(lim.get("video_rpm", 120)) or 120
 
     # 选号 ---------------------------------------------------------------
-    def acquire(self, kind: str, tier: str | None, exclude: set[str]):
+    def acquire(self, kind: str, tier: str | None, exclude: set[str],
+                prefer: str | None = None):
         """按「最久没用优先」选一个还有额度的号。
 
+        prefer 给一个账号 id 时优先用它（视频任务只在建它的那个号上可见）。
         返回 (account, retry_after)：
           - (acc, None)   选中了
           - (None, 秒数) 暂时没号，秒数是「最早可能腾出额度」的等待时间
@@ -401,6 +403,13 @@ class AccountPool:
                 usable.append(acc)
             if not usable:
                 return None, (min(waiting) if waiting else 1.0)
+            # 指定了号（视频任务粘号）就先用它
+            if prefer:
+                for acc in usable:
+                    if acc.id == prefer:
+                        acc.hits.append(t)
+                        acc.last_used = t
+                        return acc, None
             # 优先用最久没用的
             usable.sort(key=lambda a: a.last_used)
             acc = usable[0]
@@ -665,11 +674,30 @@ class Gateway:
         self.base_candidates: list = [DEFAULT_UPSTREAM, DEFAULT_UPSTREAM_CN]
         self._seq = 0
         self._seq_lock = threading.Lock()
+        # 视频任务 → 建它的账号 id。任务只在「建它的那个号」上可见，
+        # 账号池轮询会把 GET 撒到别的号上，那边一律 400 task_not_exist。
+        self._video_owner: dict[str, str] = {}
+        self._video_lock = threading.Lock()
 
     def next_no(self) -> int:
         with self._seq_lock:
             self._seq += 1
             return self._seq
+
+    # 视频任务粘号 --------------------------------------------------------
+    def bind_video(self, task_id: str, acc_id: str) -> None:
+        """记住某个视频任务是哪个号建的（只留最近 200 个）。"""
+        if not task_id or not acc_id:
+            return
+        with self._video_lock:
+            self._video_owner[task_id] = acc_id
+            if len(self._video_owner) > 200:
+                for k in list(self._video_owner)[:len(self._video_owner) - 200]:
+                    self._video_owner.pop(k, None)
+
+    def video_owner_of(self, task_id: str) -> str | None:
+        with self._video_lock:
+            return self._video_owner.get(task_id)
 
     # 上游 ---------------------------------------------------------------
     def kind_timeout(self, kind: str) -> int:
@@ -1331,6 +1359,10 @@ def make_handler(gw: Gateway):
 
             tried: set[str] = set()
             waited = 0
+            # 视频轮询要粘住建任务的那个号：别的号查这个 task 一律 400 task_not_exist
+            prefer = None
+            if method == "GET" and kind == "video":
+                prefer = gw.video_owner_of(path.rstrip("/").rsplit("/", 1)[-1])
             try:
                 max_wait = float((gw.cfg.limits or {}).get("wait_max_seconds", 3) or 0)
             except (TypeError, ValueError):
@@ -1338,7 +1370,8 @@ def make_handler(gw: Gateway):
             last = (0, "application/json",
                     b'{"error":{"message":"no available account"}}')
             for _ in range(max(1, len([a for a in gw.pool.accounts if a.enabled and a.key]))):
-                acc, wait = gw.pool.acquire(kind, tier, tried)
+                acc, wait = gw.pool.acquire(kind, tier, tried,
+                                            prefer if not tried else None)
                 if acc is None and wait and 0 < wait <= max_wait and waited < 1:
                     # 只差一点点额度就腾出来：短暂等待后改用这个号，而不是直接丢 429
                     waited = 1
@@ -1383,6 +1416,16 @@ def make_handler(gw: Gateway):
                 raw = resp.read() if hasattr(resp, "read") else (resp or b"")
                 gw.pool.release(acc, status, raw[:200].decode("utf-8", "replace"))
                 last = (status, ctype, raw)
+                if status == 200 and kind == "video" and method != "GET" and raw:
+                    # 记住这个任务是谁建的，后续轮询就只问它（别的号看不见）
+                    try:
+                        info = json.loads(raw.decode("utf-8", "replace"))
+                        tid = str(info.get("video_id") or info.get("task_id")
+                                  or info.get("id") or "")
+                        if tid:
+                            gw.bind_video(tid, acc.id)
+                    except Exception:
+                        pass
                 if status == 200:
                     gw.stats.record(kind, True, tier)
                     note = human_size(len(raw))
