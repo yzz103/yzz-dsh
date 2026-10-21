@@ -37,6 +37,9 @@ python agnes2api.py accounts add 主号 sk-xxxxxxxx
 
 # 3) 出图
 python gen_image.py --prompt "一只戴围巾的柯基犬坐在雪地里，写实摄影" --size 1024x1024
+
+# 4) 出视频（异步任务，实测 4 秒片约 5 分钟出结果）
+python gen_video.py --prompt "雨后霓虹街道，银色跑车缓缓驶过，镜头低角度横移跟拍" --seconds 4
 ```
 
 管理台：`http://127.0.0.1:7871/admin?token=<config.json 里的 admin_token>`
@@ -127,6 +130,7 @@ agnes2api.py           网关主程序
 mcp_agnes.py           MCP 连接器（stdio）
 mcp_smoke.py           MCP 冒烟测试
 gen_image.py           命令行出图小工具
+gen_video.py           命令行出视频小工具（异步任务 + 轮询 + 下载）
 install_mcp_config.py  一键写入 DSH 配置
 build_exe.py           一条命令重打包 exe（PyInstaller）
 config.example.json    配置模板

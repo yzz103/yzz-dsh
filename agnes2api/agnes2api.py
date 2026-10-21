@@ -43,7 +43,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.4.3"
+VERSION = "1.4.4"
 DEFAULT_UPSTREAM = "https://apihub.agnes-ai.com/v1"
 # 国内版（实测 2026-10-20）：apihub.agnes-ai.cn 只是国际站的镜像；
 # 真·国内站是 api.agnes-ai.cn，国内账号的 key 只在它上面认（中文报错「无效的令牌 / 当前分组不支持模型」）。

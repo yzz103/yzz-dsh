@@ -8,6 +8,25 @@
 
 ---
 
+## [1.4.4] - 2026-10-21
+
+### 新增
+- **`gen_video.py`：命令行生成视频**（`python gen_video.py --prompt "..."`）。走网关
+  `POST /v1/videos` 建异步任务，轮询到 `completed` 后把 mp4 下到 `output\`，并留一份同名
+  `.json` 记录（请求体 + 最终响应）。
+  - 默认 `agnes-video-2.5-flash` / `720P` / `16:9` / 4 秒（Agnes 支持 4–12 秒，字符串传参）。
+  - 轮询先走官方推荐的 `GET /agnesapi?video_id=…&model_name=…`，不通再回落网关的
+    `GET /v1/videos/<id>` —— 实测这两条路径会**交替**返回非 200/400，只押一条会误判成任务丢了。
+  - 兼容两种结果地址：顶层 `url` 与 `metadata.url`。
+  - 配置查找与 `gen_image.py` 一致（`--config` → `AGNES_CONFIG` → 脚本同级 → 当前目录）。
+
+### 实测（2026-10-21）
+- `agnes-video-2.5-flash`、4 秒、720P、16:9 → **1280×720、4.48 秒、H.264(avc1) + AAC 音轨**，
+  文件 2.2–3.8 MB，**出片约 5 分 10 秒**（建任务到 `completed` 307 秒，含排队）。
+- 视频可播已验证：`ftypisom` 文件头、`mvhd` 时长 4.48s、`tkhd` 1280×720、存在 `mp4a` 音轨。
+
+---
+
 ## [1.4.3] - 2026-10-21
 
 ### 修复
