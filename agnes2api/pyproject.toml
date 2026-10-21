@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agnes2api"
-version = "1.4.4"
+version = "1.4.5"
 description = "把 Agnes AI 的图片接口包成本地 OpenAI 兼容网关（多账号池 + 管理台 + MCP 工具）"
 readme = "README.md"
 requires-python = ">=3.9"

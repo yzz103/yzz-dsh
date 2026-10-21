@@ -100,11 +100,14 @@ def main() -> int:
         sm.check(ping.get("result") == {} or ping.get("result") is not None, "ping")
 
         tools = [t["name"] for t in sm.call("tools/list")["result"]["tools"]]
-        for name in ("generate_image", "list_images", "gateway_status", "delete_image"):
+        for name in ("generate_image", "generate_video", "list_images", "gateway_status", "delete_image"):
             sm.check(name in tools, f"tools/list 含 {name}")
         schema = [t for t in sm.call("tools/list")["result"]["tools"] if t["name"] == "generate_image"][0]
         sm.check("prompt" in (schema.get("inputSchema", {}).get("required") or []),
                  "generate_image 的 prompt 是必填")
+        vschema = [t for t in sm.call("tools/list")["result"]["tools"] if t["name"] == "generate_video"][0]
+        sm.check("prompt" in (vschema.get("inputSchema", {}).get("required") or []),
+                 "generate_video 的 prompt 是必填")
 
         unknown = sm.call("tools/call", {"name": "no_such_tool", "arguments": {}})
         sm.check(bool(unknown.get("error")), "未知工具返回 error", str(unknown.get("error", {}).get("code")))

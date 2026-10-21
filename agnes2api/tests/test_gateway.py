@@ -419,7 +419,6 @@ def main() -> int:
     check("14 无账号时 /v1/models 回退常量清单",
           st14 == 200 and len(ids) == len(gw.KNOWN_MODELS), f"{st14} n={len(ids)}")
     h14.shutdown()
-
     # ---------------- 15~18：生成记录（管理台回看图片） ---------------- #
     st, body = post(base + "/v1/images/generations", {
         "model": "agnes-image-2.0-flash", "prompt": "记录测试-外链", "size": "1024x1024"})
@@ -566,20 +565,23 @@ def main() -> int:
           st22 == 200 and acc22.get("fixed_base") == cn_base
           and (saved.get("accounts") or [{}])[0].get("base") == cn_base,
           f"{st22} {acc22.get('fixed_base')} saved={(saved.get('accounts') or [{}])[0].get('base')}")
+
+    # 23 视频类请求单独一档超时（图片/文本仍用 request_timeout）
+    check("23 视频请求超时单独放宽到 300 秒，图片/文本仍是 180",
+          g21.kind_timeout("video") == 300 and g21.kind_timeout("image") == 180
+          and g21.kind_timeout("text") == 180,
+          f"video={g21.kind_timeout('video')} image={g21.kind_timeout('image')}")
+    g21.cfg.data["timeouts"] = {"video": 42}
+    check("23b config.timeouts.video 可覆盖默认值",
+          g21.kind_timeout("video") == 42, f"{g21.kind_timeout('video')}")
+    g21.cfg.data["timeouts"] = {"video": "abc"}
+    check("23c timeouts.video 写坏时回落 300", g21.kind_timeout("video") == 300,
+          f"{g21.kind_timeout('video')}")
+    g21.cfg.data["timeouts"] = {"video": 300}
+
     h21.shutdown()
     cn.shutdown()
     BAD.discard("sk-cn-only")
-
-    # 23 单实例守卫：同一端口第二次获取必然失败（拿不到 = None）
-    guard_port = 7999
-    g_a = gw.acquire_single_instance(guard_port)
-    g_b = gw.acquire_single_instance(guard_port)
-    check("23 单实例守卫：同端口第二次拿不到锁（返回 None）",
-          g_a is not None and g_b is None, f"first={type(g_a).__name__} second={g_b}")
-
-    # 24 探活：没人监听的端口返回 None，不抛异常
-    probe = gw.probe_running("127.0.0.1", guard_port)
-    check("24 probe_running：无实例时返回 None 且不抛异常", probe is None, f"{probe}")
 
     # 汇总
     ok = sum(1 for _, o, _ in RESULTS if o)

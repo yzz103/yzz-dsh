@@ -32,10 +32,11 @@ from pathlib import Path
 from typing import Any
 
 SERVER_NAME = "mcp-agnes"
-SERVER_VERSION = "1.2.2"
+SERVER_VERSION = "1.3.0"
 SUPPORTED_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18", "2024-11-05"]
 DEFAULT_BASE = "http://127.0.0.1:7871"
 DEFAULT_MODEL = "agnes-image-2.5-flash"
+DEFAULT_VIDEO_MODEL = "agnes-video-2.5-flash"
 
 
 def default_config() -> Path:
@@ -76,6 +77,7 @@ class Gateway:
         # token 来源优先级：命令行/环境变量 > config.json（跨设备部署时可以完全不读配置文件）
         self.token = token
         self.timeout = 180.0
+        self.config_path = Path(config_path) if config_path else None
         if config_path is None:
             return
         try:
@@ -147,6 +149,37 @@ class Gateway:
     def delete(self, gid: str) -> tuple[int, Any]:
         return self._request("DELETE", f"/admin/api/gallery/{gid}")
 
+    # -- 视频
+
+    def create_video(self, prompt: str, seconds: str, size: str,
+                     aspect_ratio: str, model: str) -> tuple[int, Any]:
+        body = {
+            "model": model,
+            "prompt": prompt,
+            "mode": "text",
+            "seconds": str(seconds),
+            "size": size,
+            "aspect_ratio": aspect_ratio,
+            "n": 1,
+        }
+        # 建任务本身可能要等服务器排队，给足 10 分钟
+        return self._request("POST", "/v1/videos", body, timeout=600)
+
+    def video_info(self, vid: str) -> tuple[int, Any]:
+        return self._request("GET", f"/v1/videos/{vid}", timeout=180)
+
+    def video_dir(self) -> Path:
+        if self.config_path is not None:
+            return self.config_path.parent / "videos"
+        return Path.cwd() / "videos"
+
+    def download(self, url: str, dest: Path) -> int:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen(url, timeout=300) as resp:
+            data = resp.read()
+        dest.write_bytes(data)
+        return len(data)
+
 
 # ---------------------------------------------------------------- 工具定义
 
@@ -192,6 +225,28 @@ TOOLS = [
             "type": "object",
             "properties": {"id": {"type": "string", "description": "记录 id，从 list_images 里拿"}},
             "required": ["id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "generate_video",
+        "description": (
+            "用本机 Agnes 网关生成一段短视频。异步任务：建任务 → 轮询 → 下载 mp4 到本地，"
+            "返回路径、体积、耗时（视频内容不随结果返回）。默认 agnes-video-2.5-flash / 4 秒 / 720P / 16:9；"
+            "实测 4 秒片大约 5–9 分钟出结果，期间会占住一次工具调用，别当成卡死。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "画面描述，中文即可（主体、动作、运镜、光线）"},
+                "seconds": {"type": "string", "description": "时长：\"4\"–\"12\" 的字符串，默认 \"4\""},
+                "size": {"type": "string", "description": "清晰度，Flash 版只支持 720P（默认）"},
+                "aspect_ratio": {"type": "string", "description": "画幅，默认 16:9"},
+                "model": {"type": "string", "description": "模型，默认 agnes-video-2.5-flash"},
+                "wait": {"type": "boolean", "description": "true=等到出片再返回（默认）；false=只建任务回任务号"},
+                "max_wait": {"type": "integer", "description": "最长等待秒数，默认 900"},
+            },
+            "required": ["prompt"],
             "additionalProperties": False,
         },
     },
@@ -350,8 +405,93 @@ def tool_delete(gw: Gateway, args: dict) -> tuple[list[dict], bool]:
     return [{"type": "text", "text": f"已删除 {gid}"}], False
 
 
+def _pick_video_url(info: dict) -> str | None:
+    if not isinstance(info, dict):
+        return None
+    if info.get("url"):
+        return str(info["url"])
+    md = info.get("metadata")
+    if isinstance(md, dict) and md.get("url"):
+        return str(md["url"])
+    return None
+
+
+def tool_video(gw: Gateway, args: dict) -> tuple[list[dict], bool]:
+    prompt = str(args.get("prompt") or "").strip()
+    if not prompt:
+        return [{"type": "text", "text": "缺少 prompt"}], True
+    seconds = str(args.get("seconds") or "4")
+    size = str(args.get("size") or "720P")
+    ratio = str(args.get("aspect_ratio") or "16:9")
+    model = str(args.get("model") or DEFAULT_VIDEO_MODEL)
+    wait = args.get("wait", True)
+    try:
+        max_wait = int(args.get("max_wait") or 900)
+    except (TypeError, ValueError):
+        max_wait = 900
+
+    t0 = time.time()
+    status, data = gw.create_video(prompt, seconds, size, ratio, model)
+    if status != 200 or not isinstance(data, dict):
+        detail = json.dumps(data, ensure_ascii=False)[:600] if isinstance(data, (dict, list)) else str(data)[:600]
+        return [{"type": "text",
+                 "text": f"建视频任务失败（HTTP {status}）：{detail}\n"
+                         f"提示：503 video_queue_full 表示服务端视频队列满，过几分钟再试。"}], True
+
+    vid = str(data.get("video_id") or data.get("task_id") or data.get("id") or "")
+    lines = [f"已建视频任务：{vid or '(无任务号)'}",
+             f"模型 {model}　{seconds}s　{size}　{ratio}",
+             f"提示词：{prompt}"]
+    if not vid:
+        lines.append(f"返回：{json.dumps(data, ensure_ascii=False)[:400]}")
+        return [{"type": "text", "text": "\n".join(lines)}], True
+    if not wait:
+        lines.append("（wait=false，只建任务；稍后用任务号查询）")
+        return [{"type": "text", "text": "\n".join(lines)}], False
+
+    last_state = None
+    info: dict = {}
+    url = None
+    while time.time() - t0 < max_wait:
+        code, info = gw.video_info(vid)
+        if isinstance(info, dict):
+            st = info.get("status")
+            pg = info.get("progress")
+            if (st, pg) != last_state:
+                log(f"视频 {vid} → {st} {pg}")
+                last_state = (st, pg)
+            if st == "completed":
+                url = _pick_video_url(info)
+                break
+            if st in ("failed", "error"):
+                return [{"type": "text",
+                         "text": "\n".join(lines + [f"任务失败：{json.dumps(info, ensure_ascii=False)[:400]}"])}], True
+        else:
+            log(f"查询返回非 JSON（HTTP {code}）：{str(info)[:200]}")
+        time.sleep(4)
+    else:
+        lines.append(f"等了 {max_wait} 秒还没出片（当前状态 {last_state}）；任务号 {vid} 可稍后再查。")
+        return [{"type": "text", "text": "\n".join(lines)}], True
+
+    if not url:
+        lines.append(f"任务已完成但没拿到下载地址：{json.dumps(info, ensure_ascii=False)[:400]}")
+        return [{"type": "text", "text": "\n".join(lines)}], True
+    try:
+        dest = gw.video_dir() / f"{vid}.mp4"
+        size_bytes = gw.download(url, dest)
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"出片成功但下载失败：{exc}\n直链：{url}")
+        return [{"type": "text", "text": "\n".join(lines)}], True
+    lines += [f"已出片（{time.time() - t0:.0f}s）",
+              f"文件：{dest}",
+              f"体积：{human_size(size_bytes)}",
+              f"直链：{url}"]
+    return [{"type": "text", "text": "\n".join(lines)}], False
+
+
 HANDLERS = {
     "generate_image": tool_generate,
+    "generate_video": tool_video,
     "list_images": tool_list,
     "gateway_status": tool_status,
     "delete_image": tool_delete,

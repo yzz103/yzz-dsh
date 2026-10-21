@@ -43,8 +43,11 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.4.4"
+VERSION = "1.4.5"
 DEFAULT_UPSTREAM = "https://apihub.agnes-ai.com/v1"
+# 按请求类型的超时（秒）。图片/文本用 request_timeout（默认 180），视频单独放宽：
+# 实测国际站建任务有整笔卡满 180 秒的情况，收紧的后果是「明明能出片却判成网络不通」。
+DEFAULT_TIMEOUTS = {"video": 300}
 # 国内版（实测 2026-10-20）：apihub.agnes-ai.cn 只是国际站的镜像；
 # 真·国内站是 api.agnes-ai.cn，国内账号的 key 只在它上面认（中文报错「无效的令牌 / 当前分组不支持模型」）。
 DEFAULT_UPSTREAM_CN = "https://api.agnes-ai.cn/v1"
@@ -219,6 +222,11 @@ class Config:
         data.setdefault("require_client_auth", False)
         data.setdefault("client_keys", [])
         data.setdefault("request_timeout", 180)
+        # 视频建任务 / 查询比图片慢得多，单独给一档（实测国际站建任务曾卡满 180 秒被判失败）
+        to = data.get("timeouts")
+        if not isinstance(to, dict):
+            to = {}
+        data["timeouts"] = {**DEFAULT_TIMEOUTS, **to}
         # 加号时不填上游 → 自动探一遍国际站 / 国内站，哪个认这把 Key 就用哪个
         data.setdefault("auto_base", True)
         gal = dict(DEFAULT_GALLERY)
@@ -664,9 +672,20 @@ class Gateway:
             return self._seq
 
     # 上游 ---------------------------------------------------------------
+    def kind_timeout(self, kind: str) -> int:
+        """按请求类型取超时（秒）。视频单独一档，其余用 request_timeout。"""
+        default = int(self.cfg.data.get("request_timeout", 180) or 180)
+        if kind != "video":
+            return default
+        to = self.cfg.data.get("timeouts") or {}
+        try:
+            return int(to.get("video", DEFAULT_TIMEOUTS["video"]))
+        except (TypeError, ValueError, AttributeError):
+            return int(DEFAULT_TIMEOUTS["video"])
+
     def upstream_request(self, path: str, body: bytes | None, key: str,
                          method: str = "POST", stream: bool = False,
-                         base: str | None = None):
+                         base: str | None = None, timeout: int | None = None):
         # 客户端路径形如 /v1/images/generations，而 upstream 本身已含 /v1，
         # 直接拼接会变成 /v1/v1/... —— 这里把重复前缀削掉。
         root = (base or self.cfg.upstream or DEFAULT_UPSTREAM).rstrip("/")
@@ -679,7 +698,7 @@ class Gateway:
             "Accept": "text/event-stream" if stream else "application/json",
         }
         req = urllib.request.Request(url, data=body, method=method, headers=headers)
-        timeout = int(self.cfg.data.get("request_timeout", 180))
+        timeout = int(timeout or self.cfg.data.get("request_timeout", 180))
         try:
             resp = urllib.request.urlopen(req, timeout=timeout)
             return resp.status, resp.headers.get("Content-Type", "application/json"), resp
@@ -1339,7 +1358,8 @@ def make_handler(gw: Gateway):
                 tried.add(acc.id)
                 status, ctype, resp = gw.upstream_request(path, body if method != "GET" else None,
                                                          acc.key, method, stream=stream,
-                                                         base=acc.base)
+                                                         base=acc.base,
+                                                         timeout=gw.kind_timeout(kind))
                 if status == 200 and stream:
                     gw.pool.release(acc, 200)
                     gw.stats.record(kind, True, tier)
