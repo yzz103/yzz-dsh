@@ -45,9 +45,20 @@ def find_exe() -> Path:
 
 
 def profile_path(profile: str) -> Path:
+    """定位 cordis.patch.yml。
+
+    ⚠ DSH 自己注入的 `DSH_PROFILE_DIR` 指向**某个 profile 目录本身**
+    （如 `C:\\Users\\zz\\.dsh\\profiles\\desktop`），不是 profiles 的上级目录；
+    早先按「上级目录 + profile 名」拼，会变成 …/desktop/desktop/cordis.patch.yml
+    （2026-10-21 实测报「找不到 profile patch」）。
+    """
     root = os.environ.get("DSH_PROFILE_DIR")
-    base = Path(root) if root else Path.home() / ".dsh" / "profiles"
-    return base / profile / "cordis.patch.yml"
+    if root:
+        p = Path(root)
+        if p.name == profile or (p / "cordis.patch.yml").exists():
+            return p / "cordis.patch.yml"
+        return p / profile / "cordis.patch.yml"
+    return Path.home() / ".dsh" / "profiles" / profile / "cordis.patch.yml"
 
 
 HEAD = """# --- Agnes 生图 MCP（{what}）---
@@ -64,7 +75,7 @@ HEAD = """# --- Agnes 生图 MCP（{what}）---
 TAIL = """        env:
           PYTHONUTF8: '1'
           PYTHONIOENCODING: 'utf-8'
-        toolCallTimeoutMs: 300000
+{extra_env}        toolCallTimeoutMs: 900000
         failOnStartupError: false
 """
 
@@ -72,37 +83,44 @@ TAIL = """        env:
 def block_exe(exe: Path) -> str:
     return (HEAD.format(what="mcp_agnes.exe")
             + f"        command: '{exe.as_posix()}'\n"
-            + TAIL)
+            + TAIL.format(extra_env=""))
 
 
 def block_py() -> str:
+    """py 模式下脚本在 _工具 里，拿不到网关目录的 config.json，
+    所以额外把 AGNES_CONFIG 指过去（可用同名环境变量覆盖）。"""
+    cfg = os.environ.get("AGNES_CONFIG") or "D:/APP/agnes2api/config.json"
     return (HEAD.format(what="mcp_agnes.py")
             + f"        command: '{PYTHON}'\n"
             + "        args:\n"
             + f"          - '{SCRIPT}'\n"
-            + TAIL)
+            + TAIL.format(extra_env=f"          AGNES_CONFIG: '{cfg}'\n"))
 
 
 def strip_block(text: str) -> str:
-    """去掉已有的 Agnes MCP 段落（从 MARK 到该 insert 块结束）。"""
+    """去掉已有的 Agnes MCP 段落（从 MARK 到该 insert 块结束）。
+
+    块边界判据 = **缩进回到 0 的非空行**。旧实现把「顶层注释行」也算进块内容，
+    于是紧跟其后的另一个 MCP 段落会被整段吃掉（2026-10-21 实测：跑一次本脚本，
+    cordis.patch.yml 里的 GitHub MCP 段落整段消失）。
+    """
     idx = text.find(MARK)
     if idx < 0:
         return text
-    lines = text[:idx].splitlines()
+    out = text[:idx].splitlines()
     rest = text[idx:].splitlines()[1:]
-    out = list(lines)
-    in_block = False
-    for line in rest:
-        if line.startswith("- insert:") or line.startswith("- id:"):
-            in_block = True
-            continue
-        if in_block:
-            if line.strip() == "" or line.startswith((" ", "\t", "#")):
-                continue
-            out.append(line)          # 块结束后遇到新的顶层条目，保留它
-            in_block = False
-        else:
-            out.append(line)
+    n = len(rest)
+    i = 0
+    while i < n and not rest[i].startswith(("- insert:", "- id:")):
+        i += 1
+    if i < n:
+        i += 1
+        while i < n and (rest[i].strip() == "" or rest[i][:1] in (" ", "\t")):
+            i += 1
+    tail = rest[i:]
+    while tail and tail[0].strip() == "":
+        tail.pop(0)
+    out.extend(tail)
     return "\n".join(out)
 
 
