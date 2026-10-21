@@ -3,8 +3,9 @@
 """gen_video.py —— 用本机 Agnes 网关（127.0.0.1:7871）生成一段视频。
 
 异步流程：
-    1) POST /v1/videos 建任务（OpenAI Videos 兼容）
-    2) 轮询任务状态（先试网关 /v1/videos/<video_id>，不行再直连上游 /agnesapi）
+    1) POST /v1/videos 建任务（OpenAI Videos 兼容），撞到队列满（503）会自动等一会儿重试
+    2) 轮询任务状态（先问网关 /v1/videos/<video_id>；网关会粘住建任务的号，
+       归属记录丢了还会自动挨个号找。网关不通时再直连上游 /agnesapi 兜底）
     3) completed 后把 mp4 下到 output\
 
 用法：
@@ -26,6 +27,7 @@ HERE = Path(__file__).resolve().parent
 GATEWAY = os.environ.get("AGNES_BASE", "http://127.0.0.1:7871").rstrip("/")
 UPSTREAM_CN = "https://api.agnes-ai.cn/v1"
 UPSTREAM_COM = "https://apihub.agnes-ai.com"
+QUEUE_GAP = 20  # 队列满时等多少秒再重建任务
 
 
 def find_config(explicit=None) -> Path:
@@ -115,7 +117,8 @@ def main() -> int:
     ap.add_argument("--config", default=None)
     ap.add_argument("--out", default=str(HERE / "output"))
     ap.add_argument("--max-wait", type=int, default=1800)
-    ap.add_argument("--interval", type=float, default=3.0)
+    ap.add_argument("--interval", type=float, default=0.0,
+                    help="轮询间隔秒数；0（默认）=按耗时自适应（2/4/8 秒，接近完成时 1 秒）")
     args = ap.parse_args()
 
     cfg_path = find_config(args.config)
@@ -142,9 +145,17 @@ def main() -> int:
     print(f"\n建任务：model={args.model} size={args.size} {args.aspect_ratio} {args.seconds}s")
     print(f"提示词：{args.prompt[:120]}{'…' if len(args.prompt) > 120 else ''}")
     t0 = time.time()
-    status, data = http_json("POST", f"{GATEWAY}/v1/videos", body, timeout=180)
-    if status != 200:
-        print(f"[FAIL] 建任务 HTTP {status}：{json.dumps(data, ensure_ascii=False)[:500]}")
+    status, data = 0, {}
+    for attempt in range(1, 4):
+        status, data = http_json("POST", f"{GATEWAY}/v1/videos", body, timeout=180)
+        if status == 200:
+            break
+        text = json.dumps(data, ensure_ascii=False)
+        if status == 503 and "video_queue_full" in text and attempt < 3:
+            print(f"  [队列满] {QUEUE_GAP}s 后重试建任务（第 {attempt + 1}/3 次）")
+            time.sleep(QUEUE_GAP)
+            continue
+        print(f"[FAIL] 建任务 HTTP {status}：{text[:500]}")
         return 2
     video_id = data.get("video_id") or data.get("id") or data.get("task_id")
     print(f"[ok] 已建任务 video_id={video_id}　state={data.get('status')}")
@@ -156,31 +167,52 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     final = None
     last_seen = None
+    errors = 0
     while True:
-        time.sleep(args.interval)
+        # 自适应间隔：--interval > 0 时按它固定；否则前 60 秒 2 秒一查、之后 4/8 秒
+        elapsed_now = time.time() - t0
+        if args.interval and args.interval > 0:
+            nap = args.interval
+        elif last_seen and isinstance(last_seen[1], (int, float)) and last_seen[1] >= 90:
+            nap = 1.0
+        elif elapsed_now < 60:
+            nap = 2.0
+        elif elapsed_now < 300:
+            nap = 4.0
+        else:
+            nap = 8.0
+        time.sleep(nap)
         elapsed = time.time() - t0
         if elapsed > args.max_wait:
-            print(f"[FAIL] 等待超过 {args.max_wait}s，放弃")
+            print(f"[FAIL] 等待超过 {args.max_wait}s，放弃（任务号 {video_id} 可稍后再查）")
             return 3
 
-        # 官方推荐走 /agnesapi?...&model_name=...，网关的 /v1/videos/<id> 作为兜底
-        acc = accounts[0]
-        status, info = poll_via_upstream(video_id, args.model, acc["key"],
-                                         acc.get("base") or UPSTREAM_COM)
-        where = "上游"
+        # 先问网关：网关记着这个任务是谁建的，粘号 + 归属丢失时自动挨个号找
+        status, info = poll_via_gateway(video_id, args.model)
+        where = "网关"
         if status != 200 or "status" not in info:
-            status, info = poll_via_gateway(video_id, args.model)
-            where = "网关"
+            # 网关这条不通再直连上游（用第一个号，可能不是建任务的号，仅作兜底）
+            acc = accounts[0]
+            status, info = poll_via_upstream(video_id, args.model, acc["key"],
+                                             acc.get("base") or UPSTREAM_COM)
+            where = "上游"
+        if status != 200 or "status" not in info:
+            errors += 1
+            if errors >= 8:
+                print(f"[FAIL] 连续 {errors} 次查询失败，放弃（任务号 {video_id}）")
+                return 4
+            continue
+        errors = 0
         state = info.get("status") or info.get("internal_status") or "?"
         prog = info.get("progress")
         if (state, prog) != last_seen:
             print(f"  [{elapsed:5.0f}s] {where} HTTP {status}　status={state}　progress={prog}")
             last_seen = (state, prog)
 
-        if state == "completed":
+        if state in ("completed", "succeeded"):
             final = info
             break
-        if state == "failed":
+        if state in ("failed", "error"):
             print(f"[FAIL] 任务失败：{json.dumps(info.get('error') or info, ensure_ascii=False)[:400]}")
             return 4
 

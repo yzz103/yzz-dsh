@@ -52,6 +52,8 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 SEEN: dict = {"bodies": [], "keys": []}
 # 视频任务只在建它的那个 key 上可见（模拟真实上游：换号查就是 task_not_exist）
 TASK_OWNER: dict = {}
+# key → 还要回几次 503 video_queue_full（模拟上游视频队列满）
+QUEUE_FULL: dict = {}
 VALID_KEYS = {"sk-good-1", "sk-good-2", "sk-not-a-real-key"}
 FLAKY_429 = {"sk-flaky-429"}
 BAD = {"sk-bad-401"}
@@ -141,6 +143,11 @@ class FakeUpstream(BaseHTTPRequestHandler):
             return self._send(200, {"choices": [{"message": {"content": "hi"}}]})
 
         if p in ("/v1/videos", "/v1/video/generations"):
+            left = QUEUE_FULL.get(key, 0)
+            if left:
+                QUEUE_FULL[key] = left - 1
+                return self._send(503, {"code": "video_queue_full",
+                                        "message": "video queue full"})
             tid = "task_" + (key[-6:] or "anon")
             TASK_OWNER[tid] = key
             return self._send(200, {"id": "v-1", "video_id": tid, "status": "queued"})
@@ -615,6 +622,63 @@ def main() -> int:
           and set(keys_used) == {owner_key},
           f"建={st} tid={tid} codes={codes} keys={sorted(set(keys_used))}")
     h24.shutdown()
+
+    # 25 视频队列满 → 整轮等待后重试，客户端不用自己重来
+    g25, h25, b25 = new_gateway("queue", [
+        {"label": "甲号", "key": "sk-queue-1111", "enabled": True},
+    ], {"text_rpm": 10, "image_rpm": {"1K": 10, "2K": 5, "3K": 1, "4K": 1},
+        "video_rpm": 120, "rpm_window": 60, "wait_max_seconds": 0,
+        "video_queue_rounds": 2, "video_queue_gap": 1})
+    QUEUE_FULL["sk-queue-1111"] = 1
+    t0 = time.time()
+    st, body = post(b25 + "/v1/videos", {"model": "agnes-video-2.5-flash",
+                                        "prompt": "队列满后重试", "seconds": "4"})
+    waited = time.time() - t0
+    check("25 队列满（503）→ 等一会儿整轮重试后成功",
+          st == 200 and waited >= 0.8, f"{st} 等待 {waited:.2f}s")
+    check("25b 队列满不会把号凉掉（下次立刻能再用）",
+          g25.pool.accounts[0].cooldown_until == 0.0,
+          f"cooldown={g25.pool.accounts[0].cooldown_until}")
+    h25.shutdown()
+    QUEUE_FULL.clear()
+
+    # 26 归属表落盘：网关重启后还认得这个任务是谁建的
+    g26, h26, b26 = new_gateway("persist", [
+        {"label": "甲号", "key": "sk-persist-11", "enabled": True},
+    ], {"text_rpm": 10, "image_rpm": {"1K": 10, "2K": 5, "3K": 1, "4K": 1},
+        "video_rpm": 120, "rpm_window": 60, "wait_max_seconds": 0})
+    acc_id = g26.pool.accounts[0].id
+    g26.bind_video("task_persist_1", acc_id)
+    owners_file = g26.owners_path
+    saved = json.loads(owners_file.read_text(encoding="utf-8")) if owners_file.exists() else {}
+    g26b = gw.Gateway(g26.cfg.path, g26.cfg.path.parent / "stats.json")
+    check("26 视频归属落盘，重启后能读回来",
+          saved.get("task_persist_1") == acc_id
+          and g26b.video_owner_of("task_persist_1") == acc_id,
+          f"file={owners_file.name} saved={bool(saved)}")
+    h26.shutdown()
+
+    # 27 粘号记录丢了（网关重启/清理）→ 轮询时自动挨个号找，找到就补记
+    g27, h27, b27 = new_gateway("findowner", [
+        {"label": "甲号", "key": "sk-find-aaa1", "enabled": True},
+        {"label": "乙号", "key": "sk-find-bbb2", "enabled": True},
+    ], {"text_rpm": 10, "image_rpm": {"1K": 10, "2K": 5, "3K": 1, "4K": 1},
+        "video_rpm": 120, "rpm_window": 60, "wait_max_seconds": 0})
+    st, body = post(b27 + "/v1/videos", {"model": "agnes-video-2.5-flash",
+                                        "prompt": "找主人", "seconds": "4"})
+    tid = (json.loads(body).get("video_id") or "") if st == 200 else ""
+    owner = g27.video_owner_of(tid)
+    # 模拟「归属记录丢了」：只清内存，任务在上游仍然只对建它的号可见
+    with g27._video_lock:
+        g27._video_owner.clear()
+    SEEN["keys"].clear()
+    c, _b = get(b27 + "/v1/videos/" + tid)
+    tried = SEEN["keys"][:]
+    check("27 归属丢失时自动挨个号找，找到即补记",
+          c == 200 and g27.video_owner_of(tid) == owner and len(tried) >= 2,
+          f"{c} keys={tried} owner={owner}")
+    h27.shutdown()
+    TASK_OWNER.clear()
 
     # 汇总
     ok = sum(1 for _, o, _ in RESULTS if o)

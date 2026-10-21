@@ -95,6 +95,8 @@ python mcp_smoke.py --exe <mcp_agnes.exe>   # 打包模式
 | `auto_base` | 是否自动识别国际站/国内站（默认 true） |
 | `request_timeout` | 图片/文本请求的上游超时秒数（默认 180） |
 | `timeouts.video` | **视频请求单独的超时秒数（默认 300）** —— 建任务排队慢，别跟图片共用 |
+| `limits.video_queue_rounds` | 撞到「上游队列满」（503）时整轮重试的轮数（默认 2） |
+| `limits.video_queue_gap` | 两轮之间等多少秒（默认 12，须大于 transient 冷却的 5 秒） |
 | `gallery.keep` | 存档保留张数（默认 200） |
 
 ⚠ `config.json` 里是**明文 API Key**，已在 `.gitignore` 里排除，**不要提交**。

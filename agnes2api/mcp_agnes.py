@@ -32,11 +32,32 @@ from pathlib import Path
 from typing import Any
 
 SERVER_NAME = "mcp-agnes"
-SERVER_VERSION = "1.3.0"
+SERVER_VERSION = "1.4.0"
 SUPPORTED_VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18", "2024-11-05"]
 DEFAULT_BASE = "http://127.0.0.1:7871"
 DEFAULT_MODEL = "agnes-image-2.5-flash"
 DEFAULT_VIDEO_MODEL = "agnes-video-2.5-flash"
+
+# 建任务撞到「上游队列满」时的重试节奏（网关也会重试，这里是最后一道）
+CREATE_TRIES = 3
+CREATE_GAP = 20
+# 轮询节奏：刚建完任务用短间隔（尽早发现完成），跑久了放宽（少发无用请求）
+POLL_FAST = 2.0
+POLL_NORMAL = 4.0
+POLL_SLOW = 8.0
+# 连续查询失败多少次才放弃（网络抖动 / 网关重启不该让整单失败）
+POLL_ERROR_LIMIT = 8
+
+
+def poll_interval(elapsed: float, progress: float = 0.0) -> float:
+    """按已等待时间和进度给下一次查询的间隔。"""
+    if progress >= 90:
+        return 1.0
+    if elapsed < 60:
+        return POLL_FAST
+    if elapsed < 300:
+        return POLL_NORMAL
+    return POLL_SLOW
 
 
 def default_config() -> Path:
@@ -173,12 +194,22 @@ class Gateway:
             return self.config_path.parent / "videos"
         return Path.cwd() / "videos"
 
-    def download(self, url: str, dest: Path) -> int:
+    def download(self, url: str, dest: Path, on_progress=None) -> int:
+        """流式下载（先写 .part，成功才改名），避免大文件整块进内存 / 半截文件。"""
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with urllib.request.urlopen(url, timeout=300) as resp:
-            data = resp.read()
-        dest.write_bytes(data)
-        return len(data)
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        total = 0
+        with urllib.request.urlopen(url, timeout=300) as resp, tmp.open("wb") as fh:
+            while True:
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                fh.write(chunk)
+                total += len(chunk)
+                if on_progress is not None:
+                    on_progress(total)
+        tmp.replace(dest)
+        return total
 
 
 # ---------------------------------------------------------------- 工具定义
@@ -431,12 +462,26 @@ def tool_video(gw: Gateway, args: dict) -> tuple[list[dict], bool]:
         max_wait = 900
 
     t0 = time.time()
-    status, data = gw.create_video(prompt, seconds, size, ratio, model)
-    if status != 200 or not isinstance(data, dict):
-        detail = json.dumps(data, ensure_ascii=False)[:600] if isinstance(data, (dict, list)) else str(data)[:600]
+    status, data = 0, None
+    for attempt in range(1, CREATE_TRIES + 1):
+        status, data = gw.create_video(prompt, seconds, size, ratio, model)
+        if status == 200:
+            break
+        text = (json.dumps(data, ensure_ascii=False)
+                if isinstance(data, (dict, list)) else str(data))
+        queue_full = status == 503 and "video_queue_full" in text
+        if queue_full and attempt < CREATE_TRIES:
+            log(f"视频队列满，{CREATE_GAP}s 后重试建任务（第 {attempt + 1}/{CREATE_TRIES} 次）")
+            time.sleep(CREATE_GAP)
+            continue
+        hint = ("提示：503 video_queue_full 表示上游视频队列满，过几分钟再试。"
+                if queue_full else "")
         return [{"type": "text",
-                 "text": f"建视频任务失败（HTTP {status}）：{detail}\n"
-                         f"提示：503 video_queue_full 表示服务端视频队列满，过几分钟再试。"}], True
+                 "text": f"建视频任务失败（HTTP {status}）：{text[:600]}\n{hint}"}], True
+    if status != 200 or not isinstance(data, dict):
+        text = (json.dumps(data, ensure_ascii=False)
+                if isinstance(data, (dict, list)) else str(data))
+        return [{"type": "text", "text": f"建视频任务失败（HTTP {status}）：{text[:600]}"}], True
 
     vid = str(data.get("video_id") or data.get("task_id") or data.get("id") or "")
     lines = [f"已建视频任务：{vid or '(无任务号)'}",
@@ -452,37 +497,74 @@ def tool_video(gw: Gateway, args: dict) -> tuple[list[dict], bool]:
     last_state = None
     info: dict = {}
     url = None
+    progress = 0.0
+    errors = 0
+    polls = 0
     while time.time() - t0 < max_wait:
+        polls += 1
         code, info = gw.video_info(vid)
-        if isinstance(info, dict):
-            st = info.get("status")
-            pg = info.get("progress")
-            if (st, pg) != last_state:
-                log(f"视频 {vid} → {st} {pg}")
-                last_state = (st, pg)
-            if st == "completed":
-                url = _pick_video_url(info)
-                break
-            if st in ("failed", "error"):
-                return [{"type": "text",
-                         "text": "\n".join(lines + [f"任务失败：{json.dumps(info, ensure_ascii=False)[:400]}"])}], True
-        else:
-            log(f"查询返回非 JSON（HTTP {code}）：{str(info)[:200]}")
-        time.sleep(4)
+        if code != 200 or not isinstance(info, dict) or info.get("error"):
+            errors += 1
+            log(f"查询失败（HTTP {code}，连续 {errors} 次）：{str(info)[:160]}")
+            if errors >= POLL_ERROR_LIMIT:
+                lines.append(f"连续 {errors} 次查询失败，先不查了（任务号 {vid}，可稍后再查）："
+                             f"{str(info)[:200]}")
+                return [{"type": "text", "text": "\n".join(lines)}], True
+            time.sleep(poll_interval(time.time() - t0, progress))
+            continue
+        errors = 0
+        st = info.get("status") or info.get("state")
+        pg = info.get("progress")
+        try:
+            progress = float(pg or 0)
+        except (TypeError, ValueError):
+            progress = 0.0
+        if (st, pg) != last_state:
+            log(f"视频 {vid} → {st} {pg}（第 {polls} 次查询，{time.time() - t0:.0f}s）")
+            last_state = (st, pg)
+        if st in ("completed", "succeeded", "success"):
+            url = _pick_video_url(info)
+            break
+        if st in ("failed", "error"):
+            return [{"type": "text",
+                     "text": "\n".join(lines + [f"任务失败：{json.dumps(info, ensure_ascii=False)[:400]}"])}], True
+        time.sleep(poll_interval(time.time() - t0, progress))
     else:
-        lines.append(f"等了 {max_wait} 秒还没出片（当前状态 {last_state}）；任务号 {vid} 可稍后再查。")
+        lines.append(f"等了 {max_wait} 秒还没出片（当前状态 {last_state}）；"
+                     f"任务号 {vid} 可稍后再查（已查 {polls} 次）。")
         return [{"type": "text", "text": "\n".join(lines)}], True
 
     if not url:
+        # 任务说完成了，但地址有时晚一拍才出现在 metadata.url 里：再问几次
+        for _ in range(3):
+            time.sleep(2)
+            code, info = gw.video_info(vid)
+            url = _pick_video_url(info) if isinstance(info, dict) else None
+            if url:
+                break
+    if not url:
         lines.append(f"任务已完成但没拿到下载地址：{json.dumps(info, ensure_ascii=False)[:400]}")
         return [{"type": "text", "text": "\n".join(lines)}], True
-    try:
-        dest = gw.video_dir() / f"{vid}.mp4"
-        size_bytes = gw.download(url, dest)
-    except Exception as exc:  # noqa: BLE001
-        lines.append(f"出片成功但下载失败：{exc}\n直链：{url}")
-        return [{"type": "text", "text": "\n".join(lines)}], True
-    lines += [f"已出片（{time.time() - t0:.0f}s）",
+    dest = gw.video_dir() / f"{vid}.mp4"
+    last_log = [0]
+
+    def _prog(n: int) -> None:
+        if n - last_log[0] >= 2 * 1024 * 1024:
+            last_log[0] = n
+            log(f"下载 {vid} … {human_size(n)}")
+
+    size_bytes = 0
+    for attempt in range(1, 3):
+        try:
+            size_bytes = gw.download(url, dest, _prog)
+            break
+        except Exception as exc:  # noqa: BLE001
+            if attempt == 2:
+                lines.append(f"出片成功但下载失败：{exc}\n直链：{url}")
+                return [{"type": "text", "text": "\n".join(lines)}], True
+            log(f"下载失败（{exc}），2s 后重试")
+            time.sleep(2)
+    lines += [f"已出片（{time.time() - t0:.0f}s，轮询 {polls} 次）",
               f"文件：{dest}",
               f"体积：{human_size(size_bytes)}",
               f"直链：{url}"]

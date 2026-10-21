@@ -43,7 +43,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "1.4.6"
+VERSION = "1.4.7"
 DEFAULT_UPSTREAM = "https://apihub.agnes-ai.com/v1"
 # 按请求类型的超时（秒）。图片/文本用 request_timeout（默认 180），视频单独放宽：
 # 实测国际站建任务有整笔卡满 180 秒的情况，收紧的后果是「明明能出片却判成网络不通」。
@@ -73,6 +73,11 @@ DEFAULT_LIMITS = {
     "video_rpm": 120,
     "rpm_window": 60,        # RPM 统计窗口（秒）
     "wait_max_seconds": 3,   # 全池都卡在本地限流时，最多等这么久再放弃
+    # 视频建任务经常直接撞 503 video_queue_full（上游队列满）。
+    # 整轮号都试过后等一会儿再整轮重来，比把失败直接丢给客户端强：
+    # 客户端自己重试要重新建任务，既慢又可能再撞满。
+    "video_queue_rounds": 2,  # 撞队列满时整轮重试的轮数（含第一轮）
+    "video_queue_gap": 12,    # 两轮之间等多少秒（须大于 transient 冷却的 5 秒）
 }
 
 COOLDOWN = {
@@ -426,7 +431,11 @@ class AccountPool:
                 return
             acc.fail += 1
             acc.last_error = f"{status} {message[:120]}".strip()
-            if status in (401, 403):
+            if "video_queue_full" in (message or ""):
+                # 队列满不是这把 key 的问题（换号也是同一个队列），别凉着它：
+                # 重试节奏交给上层「整轮重试 + 间隔」控制。
+                acc.cooldown_until = 0.0
+            elif status in (401, 403):
                 acc.cooldown_until = now() + COOLDOWN["invalid"]
             elif status == 429:
                 acc.cooldown_until = now() + COOLDOWN["rate"]
@@ -678,6 +687,7 @@ class Gateway:
         # 账号池轮询会把 GET 撒到别的号上，那边一律 400 task_not_exist。
         self._video_owner: dict[str, str] = {}
         self._video_lock = threading.Lock()
+        self._load_owners()
 
     def next_no(self) -> int:
         with self._seq_lock:
@@ -685,15 +695,49 @@ class Gateway:
             return self._seq
 
     # 视频任务粘号 --------------------------------------------------------
+    @property
+    def owners_path(self) -> Path:
+        return self.cfg.path.parent / "videos" / "owners.json"
+
+    def _load_owners(self) -> None:
+        """启动时把归属表读回来。
+
+        只存在内存里的话，网关一重启就全丢，之后每次轮询都得靠「把号全问一遍」
+        才找得到任务（慢且吵）；落盘一份几乎零成本。
+        """
+        try:
+            raw = json.loads(self.owners_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except Exception as exc:  # noqa: BLE001
+            log(f"读视频归属表失败（忽略）: {exc}")
+            return
+        if isinstance(raw, dict):
+            with self._video_lock:
+                self._video_owner = {str(k): str(v) for k, v in raw.items()
+                                     if isinstance(k, str) and isinstance(v, str)}
+            log(f"已载入 {len(self._video_owner)} 条视频归属记录")
+
     def bind_video(self, task_id: str, acc_id: str) -> None:
-        """记住某个视频任务是哪个号建的（只留最近 200 个）。"""
+        """记住某个视频任务是哪个号建的（只留最近 200 个），并落盘。"""
         if not task_id or not acc_id:
             return
+        changed = False
         with self._video_lock:
-            self._video_owner[task_id] = acc_id
+            if self._video_owner.get(task_id) != acc_id:
+                self._video_owner[task_id] = acc_id
+                changed = True
             if len(self._video_owner) > 200:
-                for k in list(self._video_owner)[:len(self._video_owner) - 200]:
-                    self._video_owner.pop(k, None)
+                keep = list(self._video_owner)[-200:]
+                self._video_owner = {k: self._video_owner[k] for k in keep}
+                changed = True
+            snapshot = dict(self._video_owner) if changed else None
+        if snapshot is not None:
+            try:
+                self.owners_path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_json(self.owners_path, snapshot)
+            except Exception as exc:  # noqa: BLE001
+                log(f"写视频归属表失败（忽略）: {exc}")
 
     def video_owner_of(self, task_id: str) -> str | None:
         with self._video_lock:
@@ -1359,17 +1403,46 @@ def make_handler(gw: Gateway):
 
             tried: set[str] = set()
             waited = 0
+            tid = path.rstrip("/").rsplit("/", 1)[-1] if method == "GET" else ""
             # 视频轮询要粘住建任务的那个号：别的号查这个 task 一律 400 task_not_exist
             prefer = None
             if method == "GET" and kind == "video":
-                prefer = gw.video_owner_of(path.rstrip("/").rsplit("/", 1)[-1])
+                prefer = gw.video_owner_of(tid)
             try:
                 max_wait = float((gw.cfg.limits or {}).get("wait_max_seconds", 3) or 0)
             except (TypeError, ValueError):
                 max_wait = 0.0
+            # 视频建任务撞到「队列满」时整轮重试（见 DEFAULT_LIMITS 里的注释）
+            try:
+                rounds = int((gw.cfg.limits or {}).get("video_queue_rounds", 2) or 1)
+            except (TypeError, ValueError):
+                rounds = 1
+            try:
+                queue_gap = float((gw.cfg.limits or {}).get("video_queue_gap", 12) or 0)
+            except (TypeError, ValueError):
+                queue_gap = 0.0
+            if not (kind == "video" and method == "POST"):
+                rounds = 1
+            n_acc = max(1, len([a for a in gw.pool.accounts if a.enabled and a.key]))
+            attempts = 0
+            rnd = 1
             last = (0, "application/json",
                     b'{"error":{"message":"no available account"}}')
-            for _ in range(max(1, len([a for a in gw.pool.accounts if a.enabled and a.key]))):
+            while attempts < n_acc * max(1, rounds):
+                if attempts and attempts % n_acc == 0:
+                    st, _ct, rw = last
+                    # 只有「队列满」值得等一会儿整轮重来；key 失效 / 被限流再试也是同一结果
+                    if (kind == "video" and method == "POST" and st == 503
+                            and b"video_queue_full" in (rw or b"") and rnd < rounds):
+                        rnd += 1
+                        log(f"视频队列满（HTTP 503），{queue_gap:.0f}s 后整轮重试"
+                            f"（第 {rnd}/{rounds} 轮）")
+                        time.sleep(queue_gap)
+                        tried.clear()
+                        waited = 0
+                    else:
+                        break
+                attempts += 1
                 acc, wait = gw.pool.acquire(kind, tier, tried,
                                             prefer if not tried else None)
                 if acc is None and wait and 0 < wait <= max_wait and waited < 1:
@@ -1426,6 +1499,10 @@ def make_handler(gw: Gateway):
                             gw.bind_video(tid, acc.id)
                     except Exception:
                         pass
+                if status == 200 and kind == "video" and method == "GET" and raw and tid:
+                    # 轮询成功 = 这个号就是该任务的 owner。粘号记录过期或网关重启过后
+                    # 会走到这里，顺手补记，下次就不用再挨个号问了。
+                    gw.bind_video(tid, acc.id)
                 if status == 200:
                     gw.stats.record(kind, True, tier)
                     note = human_size(len(raw))
@@ -1449,15 +1526,36 @@ def make_handler(gw: Gateway):
                     self._log_req(kind, model, 200, acc.label, t0, note)
                     return self._send(200, raw, ctype)
                 if status in (400, 404, 422):
+                    if (kind == "video" and method == "GET"
+                            and b"task_not_exist" in (raw or b"")):
+                        # 这个号看不见这个任务：粘号丢了（网关重启 / 记录过期 / 换号建的）。
+                        # 不急着报错，先问下一个号 —— 谁认得谁就是 owner，成功时自动补记。
+                        log(f"{path} 账号 {acc.label} 看不见这个任务，换下一个号找")
+                        continue
                     gw.stats.record(kind, False, tier)
                     etext = raw[:120].decode("utf-8", "replace").replace("\n", " ")
                     self._log_req(kind, model, status, acc.label, t0, etext)
                     return self._send(status, raw, ctype or "application/json")
                 log(f"{path} 账号 {acc.label} 返回 {status}，换下一个")
-            # 所有账号都试过且都没成功：统一回本地 429，带上最后一次上游错误
+            # 所有账号都试过且都没成功
             gw.stats.record(kind, False, tier)
             status, _ctype, raw = last
             detail = (raw or b"")[:160].decode("utf-8", "replace")
+            if kind == "video" and method == "GET" and status in (400, 404):
+                # 每个号都说看不见 → 任务号真不存在（写错 / 过期 / 不属于这个池子）
+                self._log_req(kind, model, status, "-", t0, "所有号都看不见这个任务")
+                return self._send(status, raw or b'{"error":{"message":"task_not_exist"}}',
+                                  "application/json")
+            if kind == "video" and status == 503 and "video_queue_full" in detail:
+                # 队列满不是我们的问题也不是 key 的问题：回 503 让调用方按 Retry-After 再来
+                self._log_req(kind, model, 503, "-", t0,
+                              f"视频队列满（已试 {rnd} 轮）")
+                return self._json(503, {
+                    "error": {
+                        "message": f"上游视频队列已满，已重试 {rnd} 轮仍满：{detail}",
+                        "type": "video_queue_full",
+                    }
+                }, {"Retry-After": str(max(5, int(queue_gap or 5)))})
             self._log_req(kind, model, 429, "-", t0,
                           f"全池失败（最后一次 HTTP {status}）")
             return self._json(429, {
