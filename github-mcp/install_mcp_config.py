@@ -30,9 +30,20 @@ SCRIPT = HERE / "mcp_github.py"
 
 
 def profile_path(profile: str) -> Path:
+    """定位 cordis.patch.yml。
+
+    ⚠ DSH 自己注入的 `DSH_PROFILE_DIR` 指向**某个 profile 目录本身**
+    （如 `C:\\Users\\zz\\.dsh\\profiles\\desktop`），不是 profiles 的上级目录；
+    早先按「上级目录 + profile 名」拼，会变成 …/desktop/desktop/cordis.patch.yml
+    （2026-10-21 实测报「找不到 profile patch」）。
+    """
     root = os.environ.get("DSH_PROFILE_DIR")
-    base = Path(root) if root else Path.home() / ".dsh" / "profiles"
-    return base / profile / "cordis.patch.yml"
+    if root:
+        p = Path(root)
+        if p.name == profile or (p / "cordis.patch.yml").exists():
+            return p / "cordis.patch.yml"
+        return p / profile / "cordis.patch.yml"
+    return Path.home() / ".dsh" / "profiles" / profile / "cordis.patch.yml"
 
 
 def build_block() -> str:
@@ -58,24 +69,30 @@ def build_block() -> str:
 
 
 def strip_block(text: str) -> str:
-    """去掉已有的 GitHub MCP 段落（从 MARK 到该 insert 块结束）。"""
+    """去掉已有的 GitHub MCP 段落（从 MARK 到该 insert 块结束）。
+
+    块边界判据 = **缩进回到 0 的非空行**。旧实现把「顶层注释行」也算进块内容，
+    于是紧跟其后的另一个 MCP 段落（`# --- xxx MCP ---` + `- insert:`）会被整段吃掉
+    —— 2026-10-21 实测：跑一次 Agnes 的 install_mcp_config.py，GitHub MCP 段落消失。
+    """
     idx = text.find(MARK)
     if idx < 0:
         return text
-    head = text[:idx].splitlines()
-    out = list(head)
-    in_block = False
-    for line in text[idx:].splitlines()[1:]:
-        if line.startswith("- insert:") or line.startswith("- id:"):
-            in_block = True
-            continue
-        if in_block:
-            if line.strip() == "" or line.startswith((" ", "\t", "#")):
-                continue
-            out.append(line)  # 块之后还有别的顶层条目，保留
-            in_block = False
-        else:
-            out.append(line)
+    out = text[:idx].splitlines()
+    rest = text[idx:].splitlines()[1:]
+    n = len(rest)
+    i = 0
+    # 跳过 MARK 与 insert 之间的说明性注释
+    while i < n and not rest[i].startswith(("- insert:", "- id:")):
+        i += 1
+    if i < n:
+        i += 1  # 吃掉 insert 行本身
+        while i < n and (rest[i].strip() == "" or rest[i][:1] in (" ", "\t")):
+            i += 1
+    tail = rest[i:]
+    while tail and tail[0].strip() == "":
+        tail.pop(0)
+    out.extend(tail)
     return "\n".join(out)
 
 

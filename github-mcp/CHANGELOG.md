@@ -9,6 +9,20 @@
 
 ---
 
+## [Unreleased]
+
+### 修复
+- **`install_mcp_config.py` 会吃掉前面别的 MCP 段落**：`strip_block()` 旧实现把「顶层注释行」
+  当成上一个 insert 块的内容，于是紧跟其后的段落被整段删掉（实测：跑一次 Agnes 的安装脚本，
+  本项目的 `mcp-github` 条目从 `cordis.patch.yml` 消失，设置 → 连接器里只剩 agnes）。
+  块边界改为「缩进回到 0 的非空行」。
+- **找不到 profile**：DSH 注入的 `DSH_PROFILE_DIR` 指向 profile 目录本身，
+  旧代码按「上级目录 + profile 名」拼会多一层 `desktop`，直接报「找不到 profile patch」。
+
+> 本次只动安装脚本，服务端 `SERVER_VERSION` 无变化。
+
+---
+
 ## [1.0.8] - 2026-10-20
 
 ### 变更
